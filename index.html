@@ -1,0 +1,1309 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <title>記帳 - 主輸入畫面</title>
+    <link rel="icon" type="image/svg+xml" href="favicon.svg">
+    <link rel="alternate icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='45' fill='%23ff69b4'/><text x='50' y='70' font-size='60' text-anchor='middle' fill='white'>💰</text></svg>">
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="searchHistory.css">
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+</head>
+<body>
+    <!-- Header部分 -->
+    <div class="header-section" style="display: none;">
+        <button class="close-btn">←</button>
+        <div class="header-tabs">
+            <button class="header-tab active" data-type="expense">
+                <span class="header-tab-icon">👤</span>
+                <span class="header-tab-text">支出</span>
+            </button>
+            <button class="header-tab" data-type="income">
+                <span class="header-tab-icon">💰</span>
+                <span class="header-tab-text">收入</span>
+            </button>
+            <button class="header-tab" data-type="transfer">
+                <span class="header-tab-icon">💳</span>
+                <span class="header-tab-text">轉帳</span>
+            </button>
+        </div>
+    </div>
+
+    <!-- 記帳輸入頁面 -->
+    <div class="page-input" id="pageInput" style="display: none;">
+        <div class="app-container">
+            <!-- 返回鍵 -->
+            <div class="input-page-header">
+                <button class="back-btn" id="inputPageBackBtn">←</button>
+            </div>
+            
+            <!-- 中間：模式切換列 -->
+            <div class="tab-section">
+                <div class="tabs">
+                    <button class="tab-btn active" data-tab="recommended">
+                        <span class="tab-icon">✨</span>
+                        <span class="tab-text">推薦</span>
+                    </button>
+                    <button class="tab-btn" data-tab="ungrouped">
+                        <span class="tab-icon">📂</span>
+                        <span class="tab-text">全部</span>
+                    </button>
+                <button class="tab-btn" data-tab="more">
+                    <span class="tab-icon">➕</span>
+                    <span class="tab-text">更多</span>
+                </button>
+                </div>
+            </div>
+
+            <!-- 上半部：分類選擇區 -->
+            <div class="category-section">
+                <!-- 常用項目一鍵記錄 -->
+                <div class="quick-actions-section" id="quickActionsSection" style="display: none;">
+                    <div class="quick-actions-header">
+                        <span class="quick-actions-title">常用項目</span>
+                        <button class="quick-actions-edit-btn" id="editQuickActionsBtn">編輯</button>
+                    </div>
+                    <div class="quick-actions-grid" id="quickActionsGrid">
+                        <!-- 常用項目將由 JavaScript 動態生成 -->
+                    </div>
+                </div>
+                
+                <!-- 上一筆複製按鈕 -->
+                <div class="copy-last-section">
+                    <button class="copy-last-btn" id="copyLastBtn" title="複製上一筆記錄">
+                        <span class="copy-last-icon">📋</span>
+                        <span class="copy-last-text">上一筆</span>
+                    </button>
+                </div>
+                
+                <div class="category-grid" id="categoryGrid">
+                    <!-- 分類項目將由 JavaScript 動態生成 -->
+                </div>
+            </div>
+        </div>
+
+        <!-- 下半部：輸入區（固定在底部） -->
+        <div class="input-section collapsed" id="inputSection">
+            <!-- 頂部操作欄 -->
+            <div class="input-section-header">
+                <button class="input-back-btn" id="inputSectionBackBtn">←</button>
+                <button class="collapse-btn" id="collapseBtn">
+                    <span class="collapse-icon">▲</span>
+                </button>
+                <div class="input-header-spacer"></div>
+            </div>
+
+            <!-- 頂部按鈕行 -->
+            <div class="input-top-row">
+                <button class="input-btn account-btn">💳</button>
+                <input type="text" id="noteInput" class="note-input" placeholder="備註">
+            </div>
+            
+            <!-- 帳戶信息顯示（單獨一行，避免手機端擠在一起） -->
+            <div class="account-info-row">
+                <span class="account-info">預設帳戶(TWD) 0</span>
+            </div>
+            
+            <!-- 常用備註按鈕 -->
+            <div class="quick-notes-container" id="quickNotesContainer">
+                <div class="quick-notes-label">常用備註：</div>
+                <div class="quick-notes-buttons" id="quickNotesButtons">
+                    <button class="quick-note-btn" data-note="早餐">🍳 早餐</button>
+                    <button class="quick-note-btn" data-note="午餐">🍱 午餐</button>
+                    <button class="quick-note-btn" data-note="晚餐">🍽️ 晚餐</button>
+                    <button class="quick-note-btn" data-note="交通">🚗 交通</button>
+                    <button class="quick-note-btn" data-note="購物">🛒 購物</button>
+                    <button class="quick-note-btn" data-note="娛樂">🎮 娛樂</button>
+                </div>
+            </div>
+            
+            <!-- 第二行按鈕 -->
+            <div class="input-second-row">
+                <button class="input-btn emoji-btn">😊</button>
+                <input type="date" id="dateInput" class="input-btn date-input">
+                <button class="input-btn member-btn" id="memberBtn" title="成員">👤</button>
+                <button class="input-btn image-btn" id="imageBtn" title="添加圖片">📷</button>
+                <button class="input-btn check-btn" id="saveBtn" data-key="save">✓</button>
+            </div>
+            
+            <!-- 計入下月選項 -->
+            <div class="next-month-option" id="nextMonthOption" style="display: flex; align-items: center; justify-content: space-between; padding: 10px 16px; background: rgba(102, 126, 234, 0.05); border-radius: 12px; margin: 8px 0; border: 1px solid rgba(102, 126, 234, 0.15);">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; flex: 1;">
+                    <input type="checkbox" id="nextMonthCheckbox" style="width: 20px; height: 20px; cursor: pointer; accent-color: #667eea;">
+                    <span style="font-size: 14px; font-weight: 600; color: var(--text-primary);">📅 計入下個月（本月不計）</span>
+                </label>
+                <button class="custom-date-btn" id="customDateBtn" style="display: none; padding: 6px 12px; background: linear-gradient(135deg, #667eea, #764ba2); color: white; border: none; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; white-space: nowrap;">設定日期</button>
+            </div>
+            
+            <!-- 成員顯示 -->
+            <div class="member-display" id="memberDisplay" style="display: none;">
+                <span id="memberInfo">未選擇成員</span>
+            </div>
+            
+            <!-- 圖片預覽 -->
+            <div class="image-preview" id="imagePreview" style="display: none;">
+                <img id="previewImage" src="" alt="預覽">
+                <button class="image-remove-btn" id="removeImageBtn">✕</button>
+            </div>
+
+            <!-- 金額顯示 -->
+            <div class="amount-display">
+                <span class="currency">NT$</span>
+                <span class="amount" id="amountDisplay">0</span>
+            </div>
+
+            <!-- 數字鍵盤 -->
+            <div class="keyboard" id="keyboard">
+                <div class="keyboard-row">
+                    <button class="key-btn operator" data-key="×">×</button>
+                    <button class="key-btn" data-key="7">7</button>
+                    <button class="key-btn" data-key="8">8</button>
+                    <button class="key-btn" data-key="9">9</button>
+                </div>
+                <div class="keyboard-row">
+                    <button class="key-btn operator" data-key="÷">/</button>
+                    <button class="key-btn" data-key="4">4</button>
+                    <button class="key-btn" data-key="5">5</button>
+                    <button class="key-btn" data-key="6">6</button>
+                </div>
+                <div class="keyboard-row">
+                    <button class="key-btn operator" data-key="-">-</button>
+                    <button class="key-btn" data-key="1">1</button>
+                    <button class="key-btn" data-key="2">2</button>
+                    <button class="key-btn" data-key="3">3</button>
+                </div>
+                <div class="keyboard-row">
+                    <button class="key-btn operator" data-key="+">+</button>
+                    <button class="key-btn" data-key="0">0</button>
+                    <button class="key-btn" data-key=".">.</button>
+                    <button class="key-btn delete" data-key="delete">✕</button>
+                </div>
+                <div class="keyboard-row">
+                    <button class="key-btn clear" data-key="clear">清除</button>
+                    <button class="key-btn operator equal" data-key="=">=</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 表情選擇對話框 -->
+    <div class="emoji-select-modal" id="emojiSelectModal" style="display: none;">
+        <div class="modal-overlay"></div>
+        <div class="modal-content emoji-modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">選擇表情</h3>
+                <button class="modal-close-btn" id="emojiModalClose">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="emoji-grid" id="emojiGrid">
+                    <!-- 表情列表將由 JavaScript 動態生成 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 帳戶選擇對話框 -->
+    <div class="account-select-modal" id="accountSelectModal" style="display: none;">
+        <div class="modal-overlay"></div>
+        <div class="modal-content account-modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">選擇帳戶</h3>
+                <button class="modal-close-btn" id="accountModalClose">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="account-list" id="accountList">
+                    <!-- 帳戶列表將由 JavaScript 動態生成 -->
+                </div>
+                <button class="account-add-btn" id="accountAddBtn">➕ 新增帳戶</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- 帳戶詳情對話框 -->
+    <div class="account-detail-modal" id="accountDetailModal" style="display: none;">
+        <div class="modal-overlay"></div>
+        <div class="modal-content account-modal-content">
+            <div class="modal-header">
+                <button class="modal-back-btn" id="accountDetailBackBtn">←</button>
+                <h3 class="modal-title">帳戶詳情</h3>
+                <button class="modal-close-btn" id="accountDetailClose">✕</button>
+            </div>
+            <div class="modal-body">
+                <div id="accountDetailContent">
+                    <!-- 帳戶詳情內容將由 JavaScript 動態生成 -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 圖片裁切對話框 -->
+    <div class="image-crop-modal" id="imageCropModal" style="display: none;">
+        <div class="modal-overlay"></div>
+        <div class="modal-content crop-modal-content">
+            <div class="modal-header">
+                <h3 class="modal-title">裁切圖片</h3>
+                <button class="modal-close-btn" id="imageCropClose">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="crop-container">
+                    <canvas id="cropCanvas"></canvas>
+                    <div class="crop-overlay" id="cropOverlay">
+                        <div class="crop-box" id="cropBox"></div>
+                    </div>
+                </div>
+                <div class="crop-controls">
+                    <div class="crop-size-inputs">
+                        <label>寬度: <input type="number" id="cropWidth" value="200" min="50" max="500"></label>
+                        <label>高度: <input type="number" id="cropHeight" value="200" min="50" max="500"></label>
+                    </div>
+                    <div class="crop-actions">
+                        <button class="crop-cancel-btn" id="cropCancelBtn">取消</button>
+                        <button class="crop-confirm-btn" id="cropConfirmBtn">確認裁切</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 帳戶管理對話框 -->
+    <div class="account-manage-modal" id="accountManageModal" style="display: none;">
+        <div class="modal-overlay"></div>
+        <div class="modal-content account-modal-content">
+            <div class="modal-header">
+                <button class="modal-back-btn" id="accountManageBackBtn">←</button>
+                <h3 class="modal-title" id="accountManageTitle">新增帳戶</h3>
+                <button class="modal-close-btn" id="accountManageClose">✕</button>
+            </div>
+            <div class="modal-body">
+                <div class="form-field">
+                    <label class="form-label">帳戶圖片</label>
+                    <div class="account-image-upload">
+                        <div class="account-image-preview" id="accountImagePreview">
+                            <img id="accountImagePreviewImg" src="" alt="帳戶圖片" style="display: none;">
+                            <div class="account-image-placeholder" id="accountImagePlaceholder">💳</div>
+                        </div>
+                        <div class="account-image-actions">
+                            <button type="button" class="account-image-upload-btn" id="accountImageUploadBtn">📷 上傳圖片</button>
+                            <button type="button" class="account-image-remove-btn" id="accountImageRemoveBtn" style="display: none;">🗑️ 移除</button>
+                        </div>
+                        <input type="file" id="accountImageInput" accept="image/*" style="display: none;">
+                    </div>
+                </div>
+                <div class="form-field">
+                    <label class="form-label">帳戶名稱</label>
+                    <input type="text" class="form-input" id="accountNameInput" placeholder="例如: 現金、銀行帳戶">
+                </div>
+                <div class="form-field">
+                    <label class="form-label">幣別</label>
+                    <select class="form-input" id="accountCurrencyInput">
+                        <option value="TWD">TWD (新台幣)</option>
+                        <option value="USD">USD (美元)</option>
+                        <option value="CNY">CNY (人民幣)</option>
+                        <option value="JPY">JPY (日圓)</option>
+                        <option value="EUR">EUR (歐元)</option>
+                    </select>
+                </div>
+                <div class="form-field">
+                    <label class="form-label">初始餘額</label>
+                    <input type="number" class="form-input" id="accountBalanceInput" placeholder="0" step="0.01" value="0">
+                </div>
+                <div class="account-manage-actions">
+                    <button class="form-submit-btn" id="accountSaveBtn">儲存</button>
+                    <button class="form-delete-btn" id="accountDeleteBtn" style="display: none;">刪除</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 收支清單頁面 -->
+    <div class="page-ledger" id="pageLedger">
+        <div class="ledger-header">
+            <button class="search-btn" id="searchBtn">🔍</button>
+            <h2 class="ledger-title">默認帳本</h2>
+        </div>
+
+        <!-- 搜索框 -->
+        <div class="search-container" id="searchContainer" style="display: none;">
+            <!-- 關鍵字搜尋 -->
+            <div class="search-keyword-section">
+                <input type="text" id="searchInput" class="search-input" placeholder="搜尋關鍵字（備註、分類、帳戶...）">
+                <button class="search-close-btn" id="searchCloseBtn">✕</button>
+            </div>
+            
+            <!-- 篩選選項 -->
+            <div class="search-filters-section">
+                <!-- 日期篩選 -->
+                <div class="filter-group">
+                    <label class="filter-label">📅 日期範圍</label>
+                    <div class="filter-date-inputs">
+                        <input type="date" id="filterDateFrom" class="filter-date-input" title="開始日期">
+                        <span class="filter-date-separator">至</span>
+                        <input type="date" id="filterDateTo" class="filter-date-input" title="結束日期">
+                    </div>
+                </div>
+                
+                <!-- 分類篩選 -->
+                <div class="filter-group">
+                    <label class="filter-label">📂 分類</label>
+                    <select id="filterCategory" class="filter-select">
+                        <option value="">全部分類</option>
+                    </select>
+                </div>
+                
+                <!-- 金額範圍篩選 -->
+                <div class="filter-group">
+                    <label class="filter-label">💰 金額範圍</label>
+                    <div class="filter-amount-inputs">
+                        <input type="number" id="filterAmountMin" class="filter-amount-input" placeholder="最低金額" min="0" step="0.01">
+                        <span class="filter-amount-separator">至</span>
+                        <input type="number" id="filterAmountMax" class="filter-amount-input" placeholder="最高金額" min="0" step="0.01">
+                    </div>
+                </div>
+                
+                <!-- 清除篩選按鈕 -->
+                <div class="filter-actions">
+                    <button class="filter-clear-btn" id="filterClearBtn">清除篩選</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 類型標籤切換 -->
+        <div class="ledger-type-tabs">
+            <button class="ledger-type-tab active" data-type="expense">
+                <span class="ledger-tab-icon">👤</span>
+                <span class="ledger-tab-text">支出</span>
+            </button>
+            <button class="ledger-type-tab" data-type="income">
+                <span class="ledger-tab-icon">💰</span>
+                <span class="ledger-tab-text">收入</span>
+            </button>
+            <button class="ledger-type-tab" data-type="transfer">
+                <span class="ledger-tab-icon">💳</span>
+                <span class="ledger-tab-text">轉帳</span>
+            </button>
+        </div>
+
+        <div class="ledger-summary">
+            <div class="summary-month" id="summaryMonth">2024-12</div>
+            <div class="summary-stats">
+                <div class="stat-item">
+                    <span class="stat-label">今天花多少</span>
+                    <span class="stat-value expense" id="dailyExpenseAmount">NT$0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">月預算</span>
+                    <span class="stat-value" id="monthBudget">NT$0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">收入</span>
+                    <span class="stat-value income" id="totalIncome">NT$0</span>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">支出</span>
+                    <span class="stat-value expense" id="totalExpense">NT$0</span>
+                </div>
+            </div>
+            <div class="summary-line" id="summaryLine">收入:NT$0 支出:NT$0</div>
+        </div>
+
+        <div class="ledger-list" id="ledgerList">
+            <!-- 交易記錄將由 JavaScript 動態生成 -->
+        </div>
+
+        <!-- 浮動添加按鈕 -->
+        <button class="fab-btn" id="fabBtn">✏️</button>
+    </div>
+
+    <!-- 圖表分析頁面 -->
+    <div class="page-chart" id="pageChart" style="display: none;">
+        <div class="chart-header">
+            <button class="back-btn" id="chartBackBtn">←</button>
+            <h2 class="chart-title">圖表分析</h2>
+        </div>
+
+        <!-- 圓餅圖：本月支出結構 -->
+        <div class="chart-section">
+            <h3 class="chart-section-title">本月支出結構</h3>
+            <div class="chart-container">
+                <canvas id="pieChart"></canvas>
+        </div>
+            <div class="chart-insight" id="pieChartInsight"></div>
+        </div>
+
+        <!-- 長條圖：各分類支出 -->
+        <div class="chart-section">
+            <h3 class="chart-section-title">各分類支出</h3>
+        <div class="chart-container">
+                <canvas id="barChart"></canvas>
+            </div>
+            <div class="chart-insight" id="barChartInsight"></div>
+        </div>
+
+        <!-- 上月 vs 本月：分類比較 -->
+        <div class="chart-section">
+            <h3 class="chart-section-title">上月 vs 本月比較</h3>
+            <div class="chart-container chart-container--compare">
+                <canvas id="monthCompareChart"></canvas>
+            </div>
+            <div class="chart-insight" id="monthCompareInsight"></div>
+        </div>
+
+        <!-- 折線圖：每月總支出趨勢 -->
+        <div class="chart-section">
+            <h3 class="chart-section-title">每月總支出趨勢</h3>
+            <div class="chart-container">
+                <canvas id="lineChart"></canvas>
+            </div>
+            <div class="chart-insight" id="lineChartInsight"></div>
+        </div>
+    </div>
+
+    <!-- 預算設定頁面 -->
+    <div class="page-budget" id="pageBudget" style="display: none;">
+        <div class="budget-header">
+            <button class="back-btn" id="budgetBackBtn">←</button>
+            <h2 class="budget-title">預算設定</h2>
+        </div>
+
+        <div class="budget-summary">
+            <div class="budget-summary-item">
+                <span class="budget-summary-label">總預算</span>
+                <span class="budget-summary-value budget-total" id="totalBudgetAmount">NT$0</span>
+            </div>
+            <div class="budget-summary-item">
+                <span class="budget-summary-label">已使用</span>
+                <span class="budget-summary-value budget-used" id="totalBudgetUsed">NT$0</span>
+            </div>
+            <div class="budget-summary-item">
+                <span class="budget-summary-label">剩餘</span>
+                <span class="budget-summary-value budget-remaining" id="totalBudgetRemaining">NT$0</span>
+            </div>
+        </div>
+
+        <div class="budget-list" id="budgetList">
+            <!-- 預算項目將由 JavaScript 動態生成 -->
+        </div>
+    </div>
+
+    <!-- 每日預算追蹤頁面 -->
+    <div class="page-daily-budget" id="pageDailyBudget" style="display: none;">
+        <div class="daily-budget-header">
+            <button class="back-btn" id="dailyBudgetBackBtn">←</button>
+            <h2 class="daily-budget-title">每日預算追蹤</h2>
+        </div>
+
+        <div class="daily-budget-summary" id="dailyBudgetSummary">
+            <!-- 摘要信息將由 JavaScript 動態生成 -->
+        </div>
+
+        <div class="daily-budget-calendar" id="dailyBudgetCalendar">
+            <!-- 日曆將由 JavaScript 動態生成 -->
+        </div>
+    </div>
+
+    <!-- 設定頁面 -->
+    <div class="page-settings" id="pageSettings" style="display: none;">
+        <div class="settings-header">
+            <button class="back-btn" id="settingsBackBtn">←</button>
+            <h2 class="settings-title">設置</h2>
+        </div>
+
+        <div class="settings-list" id="settingsList">
+            <!-- 設定項目將由 JavaScript 動態生成 -->
+        </div>
+    </div>
+
+    <!-- 分類管理頁面 -->
+    <div class="page-category-manage" id="pageCategoryManage" style="display: none;">
+        <div class="category-manage-header">
+            <button class="back-btn" id="categoryManageBackBtn">←</button>
+            <h2 class="category-manage-title">分類管理</h2>
+        </div>
+
+        <div class="category-manage-list" id="categoryManageList">
+            <!-- 分類列表將由 JavaScript 動態生成 -->
+        </div>
+    </div>
+
+    <!-- 投資專區頁面 -->
+    <div class="page-investment" id="pageInvestment" style="display: none;">
+        <!-- 投資總覽頁面 -->
+        <div class="investment-overview" id="investmentOverview">
+            <!-- 頁面標題 -->
+            <div class="investment-page-header">
+                <h2 class="page-title">投資專區</h2>
+            </div>
+
+            <!-- 持股清單 -->
+            <div class="stock-list-container">
+                <div class="section-header">
+                    <h3 class="section-title">我的持股</h3>
+                    <div class="action-buttons">
+                        <button class="buy-action-btn-large" id="investmentBuyBtn" title="買入">➕ 買入</button>
+                        <button class="dca-action-btn-large" id="investmentDCABtn" title="定期定額">📅 定期定額</button>
+                        <button class="investment-icon-btn investment-icon-btn--refresh" id="forceRefreshBtn" title="強制重新抓價（清除手動標記）">🔄</button>
+                        <button class="investment-icon-btn investment-icon-btn--auto" id="autoRefreshToggleBtn" title="啟動定時更新（每5分鐘）">⏰</button>
+                    </div>
+                    <span class="stock-count" id="stockCount">0 檔</span>
+                </div>
+                <!-- 搜尋框 -->
+                <div class="stock-search-container">
+                    <input type="text" id="stockSearchInput" class="stock-search-input" placeholder="搜尋股票代碼或名稱...">
+                    <button id="stockSearchClearBtn" class="stock-search-clear-btn" style="display: none;">✕</button>
+                </div>
+                <div class="stock-list" id="stockList">
+                    <!-- 持股項目將由 JavaScript 動態生成 -->
+                </div>
+            </div>
+
+            <!-- 總覽摘要卡片 -->
+            <div class="overview-summary-grid">
+                <div class="summary-card primary full-width">
+                    <div class="summary-icon">💰</div>
+                    <div class="summary-content">
+                        <div class="summary-label">總投入金額</div>
+                        <div class="summary-value auto-size" id="totalInvested">NT$0</div>
+                    </div>
+                </div>
+                <div class="summary-card highlight full-width">
+                    <div class="summary-icon">📈</div>
+                    <div class="summary-content">
+                        <div class="summary-label">未實現損益</div>
+                        <div class="summary-value auto-size" id="unrealizedPnl">NT$0</div>
+                    </div>
+                </div>
+                <div class="summary-card highlight">
+                    <div class="summary-icon">📊</div>
+                    <div class="summary-content">
+                        <div class="summary-label">總市值</div>
+                        <div class="summary-value" id="totalMarketValue">NT$0</div>
+                    </div>
+                </div>
+                <div class="summary-card highlight annual-return-card">
+                    <div class="summary-icon">📊</div>
+                    <div class="summary-content">
+                        <div class="summary-label">年化報酬率</div>
+                        <div class="summary-value" id="annualReturn">--</div>
+                    </div>
+                </div>
+                <div class="summary-card highlight">
+                    <div class="summary-icon">💵</div>
+                    <div class="summary-content">
+                        <div class="summary-label">今年已領股息</div>
+                        <div class="summary-value" id="yearDividend">NT$0</div>
+                    </div>
+                </div>
+                <div class="summary-card highlight full-width" id="investmentExpenseRatioCard" style="display: none;">
+                    <div class="summary-icon">📊</div>
+                    <div class="summary-content">
+                        <div class="summary-label">投資 vs 生活支出比例</div>
+                        <div class="summary-value auto-size" id="investmentExpenseRatio">--</div>
+                        <div class="summary-hint" id="investmentExpenseRatioHint" style="font-size: 11px; color: var(--text-secondary); margin-top: 6px;"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 個股詳情頁面 -->
+        <div class="stock-detail-page" id="stockDetailPage" style="display: none;">
+            <!-- 返回按鈕 -->
+            <button class="detail-back-btn" id="stockDetailBackBtn">← 返回</button>
+            
+            <!-- 頂部：個股資訊 -->
+            <div class="stock-info-header">
+                <div class="stock-icon-large">📈</div>
+                <div class="stock-name-section">
+                    <div class="stock-name" id="stockDetailName">台積電</div>
+                    <div class="stock-code" id="stockDetailCode">2330</div>
+                </div>
+                <div class="stock-status-badge" id="stockStatusBadge">持有中</div>
+            </div>
+
+            <!-- 關鍵數據卡片 -->
+            <div class="stock-metrics-grid">
+                <div class="metric-card">
+                    <div class="metric-label">持股數</div>
+                    <div class="metric-value-large" id="metricShares">0 股</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">平均成本</div>
+                    <div class="metric-value-large" id="metricAvgCost">NT$0</div>
+                </div>
+                <div class="metric-card">
+                    <div class="metric-label">現價</div>
+                    <input type="number" class="metric-input-large" id="metricCurrentPrice" placeholder="輸入現價" step="0.01">
+                </div>
+                <div class="metric-card highlight">
+                    <div class="metric-label">未實現損益</div>
+                    <div class="metric-value-large pnl" id="metricUnrealizedPnl">NT$0</div>
+                </div>
+            </div>
+
+            <!-- 交易記錄分頁 -->
+            <div class="record-tabs-container">
+                <div class="record-tabs">
+                    <button class="record-tab active" data-tab="buy">買入</button>
+                    <button class="record-tab" data-tab="sell">賣出</button>
+                    <button class="record-tab" data-tab="dividend">股息</button>
+                </div>
+                <div class="record-content">
+                    <div class="record-list" id="buyRecordList" data-tab="buy">
+                        <!-- 買入紀錄將由 JavaScript 動態生成 -->
+                    </div>
+                    <div class="record-list" id="sellRecordList" data-tab="sell" style="display: none;">
+                        <!-- 賣出紀錄將由 JavaScript 動態生成 -->
+                    </div>
+                    <div class="record-list" id="dividendRecordList" data-tab="dividend" style="display: none;">
+                        <!-- 股息紀錄將由 JavaScript 動態生成 -->
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 買入/賣出輸入畫面 -->
+        <div class="investment-input-page" id="investmentInputPage" style="display: none;">
+            <!-- 頁面標題 -->
+            <div class="investment-form-header">
+                <button class="investment-form-back-btn" id="investmentInputBackBtn">
+                    <span class="back-btn-icon">←</span>
+                    <span class="back-btn-text">返回</span>
+                </button>
+                <div class="form-header-icon">📈</div>
+                <h1 class="form-header-title">股票投資記錄</h1>
+                <p class="form-header-subtitle">記錄股票投資標的、價格、股數等資訊</p>
+            </div>
+
+            <!-- 表單內容 -->
+            <div class="investment-form-container">
+                <!-- 投資類型 -->
+                <div class="form-field">
+                    <label class="form-label">投資類型</label>
+                    <div class="investment-type-buttons">
+                        <button type="button" class="type-btn active" data-type="stock">
+                            <span class="type-icon">📈</span>
+                            <span class="type-text">股票</span>
+                        </button>
+                        <button type="button" class="type-btn" data-type="etf">
+                            <span class="type-icon">📊</span>
+                            <span class="type-text">ETF</span>
+                        </button>
+                        <button type="button" class="type-btn" data-type="bond">
+                            <span class="type-icon">💼</span>
+                            <span class="type-text">債券</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 股票代碼 -->
+                <div class="form-field">
+                    <label class="form-label">代碼</label>
+                    <input type="text" 
+                           class="form-input" 
+                           id="calcStockCodeInput" 
+                           placeholder="例如: 2330 或 0050">
+                </div>
+
+                <!-- 查詢股價按鈕 -->
+                <button class="form-query-btn" id="queryStockPriceBtn">查詢股價</button>
+
+                <!-- 股票名稱 -->
+                <div class="form-field">
+                    <label class="form-label">股票名稱</label>
+                    <input type="text" 
+                           class="form-input" 
+                           id="calcStockNameInput" 
+                           placeholder="例如: 台積電">
+                </div>
+
+                <!-- 買入日期 -->
+                <div class="form-field">
+                    <label class="form-label">買入日期</label>
+                    <div class="form-date-wrapper">
+                        <input type="date" 
+                               class="form-input form-date-input" 
+                               id="calcDateInput">
+                        <span class="form-date-icon">📅</span>
+                    </div>
+                </div>
+
+                <!-- 買入價格 -->
+                <div class="form-field">
+                    <label class="form-label">買入價格</label>
+                    <input type="number" 
+                           class="form-input" 
+                           id="calcPriceInput" 
+                           placeholder="自動填入或手動輸入" 
+                           step="0.01" 
+                           min="0"
+                           value="0">
+                </div>
+
+                <!-- 股數 -->
+                <div class="form-field">
+                    <label class="form-label">股數</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="number" 
+                               class="form-input" 
+                               id="calcSharesInput" 
+                               placeholder="輸入股數或點擊按鈕自動填入" 
+                               step="1" 
+                               min="0"
+                               value="0"
+                               inputmode="numeric"
+                               style="flex: 1;">
+                        <button type="button" 
+                                class="shares-auto-fill-btn" 
+                                id="sharesAutoFillBtn" 
+                                title="填入當前持股數"
+                                style="
+                                    padding: 10px 16px;
+                                    background: linear-gradient(135deg, rgba(255, 182, 217, 0.2) 0%, rgba(255, 158, 199, 0.15) 100%);
+                                    border: 2px solid var(--color-primary-lighter);
+                                    border-radius: 12px;
+                                    color: var(--color-primary);
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    cursor: pointer;
+                                    white-space: nowrap;
+                                    transition: all 0.3s ease;
+                                    min-width: 80px;
+                                ">
+                            📊 當前持股
+                        </button>
+                    </div>
+                    <div id="currentSharesHint" style="
+                        font-size: 12px;
+                        color: var(--text-secondary);
+                        margin-top: 6px;
+                        display: none;
+                    "></div>
+                </div>
+
+                <!-- 手續費 -->
+                <div class="form-field">
+                    <label class="form-label">手續費</label>
+                    <input type="number" 
+                           class="form-input" 
+                           id="calcFeeInput" 
+                           placeholder="輸入手續費" 
+                           step="1" 
+                           min="0"
+                           value="0">
+                    <label class="form-checkbox-label" style="margin-top: 8px;">
+                        <input type="checkbox" 
+                               class="form-checkbox" 
+                               id="calcAutoFeeCheckbox">
+                        <span class="form-checkbox-text">系統自動計算（0.1425%，最低20元）</span>
+                    </label>
+                </div>
+
+                <!-- 定期定額選項（僅買入時顯示） -->
+                <div class="form-field" id="dcaFieldContainer" style="display: none;">
+                    <label class="form-checkbox-label">
+                        <input type="checkbox" 
+                               class="form-checkbox" 
+                               id="calcIsDCAInput">
+                        <span class="form-checkbox-text">定期定額投資</span>
+                    </label>
+                </div>
+
+                <!-- 計算結果（隱藏顯示，用於計算） -->
+                <div class="form-calc-results" style="display: none;">
+                    <div class="calc-result-item">
+                        <span class="calc-result-label">總金額</span>
+                        <span class="calc-result-value" id="calcTotal">NT$0</span>
+                    </div>
+                    <div class="calc-result-item">
+                        <span class="calc-result-label">手續費</span>
+                        <span class="calc-result-value" id="calcFee">NT$0</span>
+                    </div>
+                    <div class="calc-result-item highlight">
+                        <span class="calc-result-label">應付金額</span>
+                        <span class="calc-result-value-large" id="calcFinalAmount">NT$0</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 底部操作區 -->
+            <div class="investment-form-footer">
+                <button class="form-submit-btn" id="investmentSaveBtn">確認交易</button>
+            </div>
+        </div>
+
+        <!-- 股息畫面 -->
+        <div class="dividend-page" id="dividendPage" style="display: none;">
+            <!-- 頁面標題 -->
+            <div class="dividend-page-header">
+                <button class="dividend-back-btn" id="dividendBackBtn">← 返回</button>
+                <h2 class="dividend-page-title">股息紀錄</h2>
+            </div>
+            
+            <!-- 股息統計卡片 -->
+            <div class="dividend-stats-grid">
+                <div class="dividend-stat-card primary">
+                    <div class="dividend-stat-icon">💰</div>
+                    <div class="dividend-stat-content">
+                        <div class="dividend-stat-label">本年累積股息</div>
+                        <div class="dividend-stat-value-large" id="yearDividendLarge">NT$0</div>
+                    </div>
+                </div>
+                <div class="dividend-stat-card">
+                    <div class="dividend-stat-icon">📅</div>
+                    <div class="dividend-stat-content">
+                        <div class="dividend-stat-label">本月已入帳</div>
+                        <div class="dividend-stat-value" id="monthDividend">NT$0</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 股息月曆 -->
+            <div class="dividend-calendar-section">
+                <h3 class="dividend-section-title">股息月曆</h3>
+                <div class="dividend-calendar-grid" id="dividendCalendarGrid">
+                    <!-- 股息月曆將由 JavaScript 動態生成 -->
+                </div>
+            </div>
+
+            <!-- 年股息統計 -->
+            <div class="dividend-year-stats-section">
+                <h3 class="dividend-section-title">年股息統計</h3>
+                <div class="dividend-year-stats-container" id="dividendYearStatsContainer">
+                    <!-- 年股息統計將由 JavaScript 動態生成 -->
+                </div>
+            </div>
+
+            <!-- 股息記錄列表 -->
+            <div class="dividend-records-section">
+                <h3 class="dividend-section-title">股息記錄</h3>
+                <div class="dividend-records-list" id="dividendRecordsList">
+                    <!-- 股息記錄將由 JavaScript 動態生成 -->
+                </div>
+            </div>
+        </div>
+
+        <!-- 定期定額管理頁面 -->
+        <div class="dca-management-page" id="dcaManagementPage" style="display: none;">
+            <div class="dca-page-header">
+                <button class="dca-back-btn" id="dcaBackBtn">← 返回</button>
+                <h2 class="dca-page-title">定期定額管理</h2>
+                <button class="dca-add-btn" id="dcaAddBtn">➕</button>
+            </div>
+            
+            <div class="dca-list-container" id="dcaListContainer">
+                <!-- 定期定額計劃列表將由 JavaScript 動態生成 -->
+            </div>
+        </div>
+
+        <!-- 定期定額執行對話框 -->
+        <div class="dca-execute-modal" id="dcaExecuteModal" style="display: none;">
+            <div class="modal-overlay"></div>
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 class="modal-title">執行定期定額</h3>
+                    <button class="modal-close-btn" id="dcaExecuteModalClose">✕</button>
+                </div>
+                <div class="modal-body">
+                    <div class="modal-stock-info">
+                        <div class="modal-stock-name" id="dcaExecuteStockName">台積電</div>
+                        <div class="modal-stock-code" id="dcaExecuteStockCode">2330</div>
+                    </div>
+                    <div class="modal-reference-price" id="dcaExecuteReferencePrice" style="display: none;">
+                        參考價格：NT$<span id="dcaExecuteReferencePriceValue">0</span>
+                    </div>
+                    <div class="form-field">
+                        <label class="form-label">當前股價</label>
+                        <input type="number" 
+                               class="form-input" 
+                               id="dcaExecutePriceInput" 
+                               placeholder="請輸入當前股價" 
+                               step="0.01" 
+                               min="0">
+                    </div>
+                    <div class="modal-preview" id="dcaExecutePreview" style="display: none;">
+                        <div class="preview-item">
+                            <span class="preview-label">可買股數</span>
+                            <span class="preview-value" id="dcaExecuteShares">0 股</span>
+                        </div>
+                        <div class="preview-item">
+                            <span class="preview-label">手續費</span>
+                            <span class="preview-value" id="dcaExecuteFee">NT$0</span>
+                        </div>
+                        <div class="preview-item highlight">
+                            <span class="preview-label">總金額</span>
+                            <span class="preview-value" id="dcaExecuteTotal">NT$0</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="modal-btn cancel-btn" id="dcaExecuteCancel">取消</button>
+                    <button class="modal-btn confirm-btn" id="dcaExecuteConfirm">確認執行</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 定期定額設定頁面 -->
+        <div class="dca-setup-page" id="dcaSetupPage" style="display: none;">
+            <div class="dca-setup-header">
+                <button class="dca-setup-back-btn" id="dcaSetupBackBtn">← 返回</button>
+                <h2 class="dca-setup-title" id="dcaSetupTitle">新增定期定額</h2>
+            </div>
+            
+            <div class="dca-setup-form">
+                <div class="form-field">
+                    <label class="form-label">股票代碼</label>
+                    <input type="text" class="form-input" id="dcaStockCodeInput" placeholder="例如: 2330 或 0050">
+                </div>
+                
+                <div class="form-field">
+                    <label class="form-label">股票名稱</label>
+                    <input type="text" class="form-input" id="dcaStockNameInput" placeholder="例如: 台積電">
+                </div>
+                
+                <div class="form-field">
+                    <label class="form-label">每月投資金額</label>
+                    <input type="number" class="form-input" id="dcaAmountInput" placeholder="例如: 10000" step="100" min="0">
+                </div>
+                
+                <div class="form-field">
+                    <label class="form-label">扣款日期（每月幾號）</label>
+                    <input type="number" class="form-input" id="dcaDayInput" placeholder="1-28" min="1" max="28" value="1">
+                </div>
+
+                <div class="form-field">
+                    <label class="form-label">扣款銀行帳戶</label>
+                    <select class="form-input" id="dcaFromAccountSelect"></select>
+                </div>
+
+                <div class="form-field">
+                    <label class="form-label">交割帳戶</label>
+                    <select class="form-input" id="dcaSettlementAccountSelect"></select>
+                </div>
+                
+                <div class="form-field">
+                    <label class="form-label">手續費</label>
+                    <input type="number" class="form-input" id="dcaFeeInput" placeholder="輸入手續費" step="1" min="0" value="0">
+                    <label class="form-checkbox-label" style="margin-top: 8px;">
+                        <input type="checkbox" class="form-checkbox" id="dcaAutoFeeCheckbox">
+                        <span class="form-checkbox-text">系統自動計算（0.1425%，最低20元）</span>
+                    </label>
+                </div>
+                
+                <div class="form-field">
+                    <label class="form-checkbox-label">
+                        <input type="checkbox" class="form-checkbox" id="dcaEnabledInput" checked>
+                        <span class="form-checkbox-text">啟用定期定額</span>
+                    </label>
+                </div>
+                
+                <div class="dca-setup-actions">
+                    <button class="form-submit-btn" id="dcaSaveBtn">儲存</button>
+                    <button class="form-delete-btn" id="dcaDeleteBtn" style="display: none;">刪除</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- 操作按鈕區（已隱藏） -->
+        <div class="investment-actions" style="display: none !important;">
+            <button class="action-btn buy-btn" id="actionBuy">買入</button>
+            <button class="action-btn sell-btn" id="actionSell">賣出</button>
+            <button class="action-btn dividend-btn" id="actionDividend">股息</button>
+            <button class="action-btn dca-btn" id="actionDCA">定期定額</button>
+        </div>
+
+        <!-- 買入記錄表單（舊版，已隱藏） -->
+        <div class="investment-form" id="buyForm" style="display: none;">
+            <div class="form-group">
+                <label>股票代碼/名稱</label>
+                <input type="text" id="stockCode" placeholder="例如：2330 或 台積電" required>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>買入日期</label>
+                    <input type="date" id="buyDate" required>
+                </div>
+                <div class="form-group">
+                    <label>買入價格</label>
+                    <input type="number" id="buyPrice" step="0.01" placeholder="元" required>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>股數</label>
+                    <input type="number" id="buyShares" step="1" placeholder="股" required>
+                </div>
+                <div class="form-group">
+                    <label>手續費</label>
+                    <input type="number" id="buyFee" step="0.01" placeholder="元" value="0">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>
+                    <input type="checkbox" id="isDCA"> 定期定額
+                </label>
+            </div>
+            <div class="form-group">
+                <label>備註</label>
+                <input type="text" id="buyNote" placeholder="選填">
+            </div>
+            <button class="submit-btn" id="submitBuy">記錄買入</button>
+        </div>
+
+        <!-- 賣出記錄表單 -->
+        <div class="investment-form" id="sellForm" style="display: none;">
+            <div class="form-group">
+                <label>股票代碼/名稱</label>
+                <input type="text" id="sellStockCode" placeholder="選擇持股" required>
+                <select id="sellStockSelect" style="margin-top: 8px;">
+                    <option value="">請選擇持股</option>
+                </select>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>賣出日期</label>
+                    <input type="date" id="sellDate" required>
+                </div>
+                <div class="form-group">
+                    <label>賣出價格</label>
+                    <input type="number" id="sellPrice" step="0.01" placeholder="元" required>
+                </div>
+            </div>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>賣出股數</label>
+                    <input type="number" id="sellShares" step="1" placeholder="股" required>
+                </div>
+                <div class="form-group">
+                    <label>手續費</label>
+                    <input type="number" id="sellFee" step="0.01" placeholder="元" value="0">
+                </div>
+            </div>
+            <div class="form-group">
+                <label>證交稅</label>
+                <input type="number" id="sellTax" step="0.01" placeholder="元" value="0">
+            </div>
+            <div class="form-group">
+                <label>備註</label>
+                <input type="text" id="sellNote" placeholder="選填">
+            </div>
+            <div class="form-group">
+                <div class="calc-result">
+                    <span>預估實現損益：</span>
+                    <span id="estimatedPnl" class="pnl-value">NT$0</span>
+                </div>
+            </div>
+            <button class="submit-btn" id="submitSell">記錄賣出</button>
+        </div>
+
+        <!-- 股息輸入頁面 -->
+        <div class="investment-input-page" id="dividendInputPage" style="display: none;">
+            <!-- 頁面標題 -->
+            <div class="investment-form-header">
+                <button class="investment-form-back-btn" id="dividendInputBackBtn">
+                    <span class="back-btn-icon">←</span>
+                    <span class="back-btn-text">返回</span>
+                </button>
+                <div class="form-header-icon">💰</div>
+                <h1 class="form-header-title">股息記錄</h1>
+                <p class="form-header-subtitle">記錄股票股息發放資訊</p>
+            </div>
+
+            <!-- 表單內容 -->
+            <div class="investment-form-container">
+                <!-- 股票代碼 -->
+                <div class="form-field">
+                    <label class="form-label">代碼</label>
+                    <input type="text" 
+                           class="form-input" 
+                           id="dividendStockCodeInput" 
+                           placeholder="例如: 2330 或 0050">
+                </div>
+
+                <!-- 股票名稱 -->
+                <div class="form-field">
+                    <label class="form-label">股票名稱</label>
+                    <input type="text" 
+                           class="form-input" 
+                           id="dividendStockNameInput" 
+                           placeholder="例如: 台積電">
+                </div>
+
+                <!-- 發放日期 -->
+                <div class="form-field">
+                    <label class="form-label">發放日期</label>
+                    <div class="form-date-wrapper">
+                        <input type="date" 
+                               class="form-input form-date-input" 
+                               id="dividendDateInput">
+                        <span class="form-date-icon">📅</span>
+                    </div>
+                </div>
+
+                <!-- 股息類型 -->
+                <div class="form-field">
+                    <label class="form-label">股息類型</label>
+                    <div class="investment-type-buttons">
+                        <button type="button" class="type-btn active" data-type="cash">
+                            <span class="type-icon">💵</span>
+                            <span class="type-text">現金股利</span>
+                        </button>
+                        <button type="button" class="type-btn" data-type="stock">
+                            <span class="type-icon">📊</span>
+                            <span class="type-text">股票股利</span>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- 每股股息 -->
+                <div class="form-field">
+                    <label class="form-label">每股股息</label>
+                    <input type="number" 
+                           class="form-input" 
+                           id="dividendPerShareInput" 
+                           placeholder="輸入每股股息" 
+                           step="0.01" 
+                           min="0"
+                           value="0">
+                </div>
+
+                <!-- 股數 -->
+                <div class="form-field">
+                    <label class="form-label">股數</label>
+                    <div style="display: flex; gap: 8px; align-items: center;">
+                        <input type="number" 
+                               class="form-input" 
+                               id="dividendSharesInput" 
+                               placeholder="輸入股數或點擊按鈕自動填入" 
+                               step="1" 
+                               min="0"
+                               value="0"
+                               inputmode="numeric"
+                               style="flex: 1;">
+                        <button type="button" 
+                                class="shares-auto-fill-btn" 
+                                id="dividendSharesAutoFillBtn" 
+                                title="填入當前持股數"
+                                style="
+                                    padding: 10px 16px;
+                                    background: linear-gradient(135deg, rgba(255, 182, 217, 0.2) 0%, rgba(255, 158, 199, 0.15) 100%);
+                                    border: 2px solid var(--color-primary-lighter);
+                                    border-radius: 12px;
+                                    color: var(--color-primary);
+                                    font-size: 13px;
+                                    font-weight: 600;
+                                    cursor: pointer;
+                                    white-space: nowrap;
+                                    transition: all 0.3s ease;
+                                    min-width: 80px;
+                                ">
+                            📊 當前持股
+                        </button>
+                    </div>
+                    <div id="dividendCurrentSharesHint" style="
+                        font-size: 12px;
+                        color: var(--text-secondary);
+                        margin-top: 6px;
+                        display: none;
+                    "></div>
+                </div>
+
+                <!-- 實收金額 -->
+                <div class="form-field">
+                    <label class="form-label">實收金額</label>
+                    <input type="number" 
+                           class="form-input" 
+                           id="dividendAmountInput" 
+                           placeholder="自動計算或手動輸入" 
+                           step="0.01" 
+                           min="0"
+                           value="0">
+                </div>
+
+                <!-- 手續費 -->
+                <div class="form-field">
+                    <label class="form-label">手續費（選填）</label>
+                    <input type="number" 
+                           class="form-input" 
+                           id="dividendFeeInput" 
+                           placeholder="輸入手續費" 
+                           step="0.01" 
+                           min="0"
+                           value="0">
+                    <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 4px;">股息入帳時可能產生的手續費</div>
+                </div>
+
+                <!-- 再投入選項 -->
+                <div class="form-field">
+                    <label class="form-label">再投入</label>
+                    <div class="form-toggle-wrapper">
+                        <label class="form-toggle">
+                            <input type="checkbox" id="dividendReinvestInput">
+                            <span class="toggle-slider"></span>
+                            <span class="toggle-label">是否再投入</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- 備註 -->
+                <div class="form-field">
+                    <label class="form-label">備註</label>
+                    <input type="text" 
+                           class="form-input" 
+                           id="dividendNoteInput" 
+                           placeholder="選填備註">
+                </div>
+            </div>
+
+            <!-- 底部操作區 -->
+            <div class="investment-form-footer">
+                <button class="form-submit-btn" id="dividendSaveBtn">
+                    <span class="submit-btn-icon">✨</span>
+                    <span class="submit-btn-text">確認記錄</span>
+                </button>
+            </div>
+        </div>
+
+        <!-- 持股列表 -->
+        <div class="portfolio-list" id="portfolioList" style="display: none;">
+            <!-- 持股項目將由 JavaScript 動態生成 -->
+        </div>
+
+        <!-- 投資記錄列表 -->
+        <div class="investment-records" id="investmentRecords">
+            <!-- 投資記錄將由 JavaScript 動態生成 -->
+        </div>
+    </div>
+
+    <!-- 底部導航欄 -->
+    <div class="bottom-nav">
+        <button class="nav-item active" data-page="ledger">
+            <img src="image/Attached_image.png" alt="記帳本" class="nav-icon">
+            <span class="nav-text">記帳本</span>
+        </button>
+        <button class="nav-item" data-page="wallet">
+            <img src="image/Attached_image2.png" alt="錢包" class="nav-icon">
+            <span class="nav-text">錢包</span>
+        </button>
+        <button class="nav-item" data-page="investment">
+            <img src="image/Attached_image3.png" alt="投資專區" class="nav-icon">
+            <span class="nav-text">投資專區</span>
+        </button>
+        <button class="nav-item" data-page="chart">
+            <img src="image/Attached_image4.png" alt="圖表分析" class="nav-icon">
+            <span class="nav-text">圖表分析</span>
+        </button>
+        <button class="nav-item" data-page="settings">
+            <img src="image/Attached_image5.png" alt="設置" class="nav-icon">
+            <span class="nav-text">設置</span>
+        </button>
+    </div>
+
+    <!-- 模組化腳本 -->
+    <script src="js/categories.js"></script>
+    <script src="js/storage.js"></script>
+    <script src="js/advisor.js"></script>
+    <!-- 主腳本（保留其他功能） -->
+    <script src="script.js?v=20251218_3"></script>
+    <script src="searchHistoryInit.js" type="module"></script>
+</body>
+</html>
