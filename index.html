@@ -385,7 +385,11 @@
         </div>
 
         <div class="ledger-summary">
-            <div class="summary-month" id="summaryMonth">2024-12</div>
+            <div class="summary-month-nav" id="summaryMonthNav">
+                <button class="month-nav-btn" id="ledgerPrevMonthBtn" type="button">上一個月</button>
+                <div class="summary-month" id="summaryMonth">2024-12</div>
+                <button class="month-nav-btn" id="ledgerNextMonthBtn" type="button">下一個月</button>
+            </div>
             <div class="summary-stats">
                 <div class="stat-item">
                     <span class="stat-label">今天花多少</span>
@@ -420,6 +424,11 @@
         <div class="chart-header">
             <button class="back-btn" id="chartBackBtn">←</button>
             <h2 class="chart-title">圖表分析</h2>
+            <div class="chart-month-nav" id="chartMonthNav">
+                <button class="month-nav-btn" id="chartPrevMonthBtn" type="button">上一個月</button>
+                <div class="chart-month-text" id="chartMonthText">2024-12</div>
+                <button class="month-nav-btn" id="chartNextMonthBtn" type="button">下一個月</button>
+            </div>
         </div>
 
         <!-- 圓餅圖：本月支出結構 -->
@@ -514,6 +523,77 @@
         </div>
     </div>
 
+    <!-- 分期規則管理頁面 -->
+    <div class="installment-management-page" id="installmentManagementPage" style="display: none;">
+        <div class="dca-page-header">
+            <button class="dca-back-btn" id="installmentBackBtn">← 返回</button>
+            <h2 class="dca-page-title">分期規則管理</h2>
+            <button class="dca-add-btn" id="installmentAddBtn">➕</button>
+        </div>
+
+        <div class="dca-list-container" id="installmentListContainer">
+            <!-- 分期規則列表將由 JavaScript 動態生成 -->
+        </div>
+    </div>
+
+    <!-- 分期規則設定頁面 -->
+    <div class="installment-setup-page" id="installmentSetupPage" style="display: none;">
+        <div class="dca-setup-header">
+            <button class="dca-setup-back-btn" id="installmentSetupBackBtn">← 返回</button>
+            <h2 class="dca-setup-title" id="installmentSetupTitle">新增分期規則</h2>
+        </div>
+
+        <div class="dca-setup-form">
+            <div class="form-field">
+                <label class="form-label">名稱</label>
+                <input type="text" class="form-input" id="installmentNameInput" placeholder="例如: 房貸 / 車貸 / 信用卡分期">
+            </div>
+
+            <div class="form-field">
+                <label class="form-label">分類</label>
+                <input type="text" class="form-input" id="installmentCategoryInput" placeholder="例如: 住房 / 卡費">
+            </div>
+
+            <div class="form-field">
+                <label class="form-label">總金額</label>
+                <input type="number" class="form-input" id="installmentTotalAmountInput" placeholder="例如: 1200000" step="1" min="0">
+            </div>
+
+            <div class="form-field">
+                <label class="form-label">期數</label>
+                <input type="number" class="form-input" id="installmentTotalPeriodsInput" placeholder="例如: 240" step="1" min="1">
+            </div>
+
+            <div class="form-field">
+                <label class="form-label">每期金額（系統自算）</label>
+                <input type="number" class="form-input" id="installmentPerPeriodAmountInput" placeholder="自動計算" step="1" min="0" disabled>
+            </div>
+
+            <div class="form-field">
+                <label class="form-label">扣款日期（每月幾號）</label>
+                <input type="number" class="form-input" id="installmentDayInput" placeholder="1-28" min="1" max="28" value="1">
+            </div>
+
+            <div class="form-field">
+                <label class="form-label">起始月份</label>
+                <input type="month" class="form-input" id="installmentStartMonthInput" placeholder="2025-01">
+            </div>
+
+            <div class="form-field">
+                <label class="form-checkbox-label">
+                    <input type="checkbox" class="form-checkbox" id="installmentEnabledInput" checked>
+                    <span class="form-checkbox-text">啟用分期規則</span>
+                </label>
+            </div>
+
+            <div class="dca-setup-actions">
+                <button class="form-submit-btn" id="installmentSaveBtn">儲存</button>
+                <button class="form-delete-btn" id="installmentVoidBtn" style="display: none;">刪除</button>
+                <button class="form-delete-btn" id="installmentReviseBtn" style="display: none;">修正分期</button>
+            </div>
+        </div>
+    </div>
+
     <!-- 分類管理頁面 -->
     <div class="page-category-manage" id="pageCategoryManage" style="display: none;">
         <div class="category-manage-header">
@@ -542,8 +622,6 @@
                     <div class="action-buttons">
                         <button class="buy-action-btn-large" id="investmentBuyBtn" title="買入">➕ 買入</button>
                         <button class="dca-action-btn-large" id="investmentDCABtn" title="定期定額">📅 定期定額</button>
-                        <button class="investment-icon-btn investment-icon-btn--refresh" id="forceRefreshBtn" title="強制重新抓價（清除手動標記）">🔄</button>
-                        <button class="investment-icon-btn investment-icon-btn--auto" id="autoRefreshToggleBtn" title="啟動定時更新（每5分鐘）">⏰</button>
                     </div>
                     <span class="stock-count" id="stockCount">0 檔</span>
                 </div>
@@ -632,7 +710,12 @@
                 </div>
                 <div class="metric-card">
                     <div class="metric-label">現價</div>
-                    <input type="number" class="metric-input-large" id="metricCurrentPrice" placeholder="輸入現價" step="0.01">
+                    <div class="metric-price-wrapper metric-price-wrapper--simple">
+                        <input type="number" class="metric-input-large" id="metricCurrentPrice" placeholder="輸入現價" step="0.01">
+                        <a href="#" class="metric-quote-btn" id="metricQuoteLink" data-site="cnyes" target="_blank" rel="noopener noreferrer">
+                            鉅亨網查價
+                        </a>
+                    </div>
                 </div>
                 <div class="metric-card highlight">
                     <div class="metric-label">未實現損益</div>
@@ -1139,6 +1222,18 @@
                     </div>
                 </div>
 
+                <!-- 除息日期 -->
+                <div class="form-field">
+                    <label class="form-label">除息日期</label>
+                    <div class="form-date-wrapper">
+                        <input type="date" 
+                               class="form-input form-date-input" 
+                               id="dividendExDateInput">
+                        <span class="form-date-icon">✂️</span>
+                    </div>
+                    <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 4px;">可留空，僅記錄有提供的除息日</div>
+                </div>
+
                 <!-- 股息類型 -->
                 <div class="form-field">
                     <label class="form-label">股息類型</label>
@@ -1164,6 +1259,18 @@
                            step="0.01" 
                            min="0"
                            value="0">
+                </div>
+
+                <!-- 過去每股股息 -->
+                <div class="form-field">
+                    <label class="form-label">過去每股股息（選填）</label>
+                    <input type="number" 
+                           class="form-input" 
+                           id="dividendHistoricalPerShareInput" 
+                           placeholder="輸入上一季/年度每股" 
+                           step="0.01" 
+                           min="0">
+                    <div style="font-size: 12px; color: var(--text-tertiary); margin-top: 4px;">幫助對照本次配息 vs. 過去水準</div>
                 </div>
 
                 <!-- 股數 -->
@@ -1277,23 +1384,23 @@
     <!-- 底部導航欄 -->
     <div class="bottom-nav">
         <button class="nav-item active" data-page="ledger">
-            <img src="image/Attached_image.png" alt="記帳本" class="nav-icon">
+            <img src="./image/1.png?t=20251220" alt="記帳本" class="nav-icon">
             <span class="nav-text">記帳本</span>
         </button>
         <button class="nav-item" data-page="wallet">
-            <img src="image/Attached_image2.png" alt="錢包" class="nav-icon">
+            <img src="./image/2.png?t=20251220" alt="錢包" class="nav-icon">
             <span class="nav-text">錢包</span>
         </button>
         <button class="nav-item" data-page="investment">
-            <img src="image/Attached_image3.png" alt="投資專區" class="nav-icon">
+            <img src="./image/3.png?t=20251220" alt="投資專區" class="nav-icon">
             <span class="nav-text">投資專區</span>
         </button>
         <button class="nav-item" data-page="chart">
-            <img src="image/Attached_image4.png" alt="圖表分析" class="nav-icon">
+            <img src="./image/4.png?t=20251220" alt="圖表分析" class="nav-icon">
             <span class="nav-text">圖表分析</span>
         </button>
         <button class="nav-item" data-page="settings">
-            <img src="image/Attached_image5.png" alt="設置" class="nav-icon">
+            <img src="./image/5.png?t=20251220" alt="設置" class="nav-icon">
             <span class="nav-text">設置</span>
         </button>
     </div>
