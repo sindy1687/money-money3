@@ -9,6 +9,42 @@ if (typeof window !== 'undefined' && typeof window.applyAutoWidth !== 'function'
     window.applyAutoWidth = function () {};
 }
 
+const DEFAULT_CATEGORY_IMAGES = {
+    '飲食': './image/13.png',
+    '外食 / 飲料': './image/14.png',
+    '交通': './image/15.png',
+    '住房物業': './image/16.png',
+    '水電瓦斯': './image/17.png',
+    '網路 / 電信': './image/18.png',
+    '購物': './image/19.png',
+    '投資理財': './image/19.png',
+    '醫療': './image/20.png',
+    '薪資': './image/21.png',
+    '投資收益': './image/21.png',
+    '轉帳': './image/6.png',
+    '銀行轉帳': './image/7.png',
+    '跨行轉帳': './image/8.png',
+    '電子支付轉帳': './image/9.png',
+    '帳戶間轉帳': './image/10.png',
+    '現金轉帳': './image/11.png',
+    '信用卡轉帳': './image/12.png'
+};
+
+function getDefaultCategoryImage(categoryName) {
+    return DEFAULT_CATEGORY_IMAGES[categoryName] || null;
+}
+
+function firstGrapheme(str) {
+    if (!str) return '';
+    if (typeof Intl !== 'undefined' && Intl.Segmenter) {
+        const seg = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+        const it = seg.segment(str)[Symbol.iterator]();
+        const first = it.next().value;
+        return first ? first.segment : '';
+    }
+    return str.trim().slice(0, 2);
+}
+
 function formatMonthKey(dateObj) {
     const d = new Date(dateObj);
     if (Number.isNaN(d.getTime())) return '';
@@ -511,12 +547,17 @@ function initCategoryGrid(tabType = 'recommended', recordType = null) {
                     if (hasCustomIcon) {
                         iconHtml = `
                             <div class="category-icon-wrapper custom-icon-wrapper">
-                                <img src="${customIcons[category.name].value}" alt="${category.name}" class="category-icon-image">
+                                <img src="${customIcons[category.name].value}" alt="${category.name}" class="category-icon-image" onerror="this.outerHTML='<span class=&quot;category-icon&quot;>' + (this.getAttribute(&quot;data-fallback&quot;) || '📦') + '</span>'" data-fallback="${category.icon || '📦'}">
                                 <span class="custom-icon-badge">✨</span>
                             </div>
                         `;
                     } else {
-                        iconHtml = `<span class="category-icon">${category.icon}</span>`;
+                        const defaultImg = getDefaultCategoryImage(category.name);
+                        if (defaultImg) {
+                            iconHtml = `<img src="${defaultImg}" alt="${category.name}" class="category-icon-image" onerror="this.outerHTML='<span class=&quot;category-icon&quot;>' + (this.getAttribute(&quot;data-fallback&quot;) || '📦') + '</span>'" data-fallback="${category.icon || '📦'}">`;
+                        } else {
+                            iconHtml = `<span class="category-icon">${category.icon || '📦'}</span>`;
+                        }
                     }
                     
                     categoryItem.innerHTML = `
@@ -2812,6 +2853,253 @@ function initInvestmentTypeTabs() {
                 updateStockSelects();
             }
         });
+    });
+}
+
+function exportExpenseCategorySummaryCsv() {
+    const records = JSON.parse(localStorage.getItem('accountingRecords') || '[]');
+    const expenses = records.filter(r => r && (r.type === 'expense' || !r.type));
+
+    if (!expenses.length) {
+        alert('沒有找到支出記錄');
+        return;
+    }
+
+    const sums = new Map();
+    const counts = new Map();
+
+    expenses.forEach(r => {
+        const category = (r.category || '未分類').toString();
+        const amount = Number(String(r.amount ?? 0).replace(/,/g, '')) || 0;
+        sums.set(category, (sums.get(category) || 0) + amount);
+        counts.set(category, (counts.get(category) || 0) + 1);
+    });
+
+    const rows = Array.from(sums.entries())
+        .map(([category, total]) => ({ category, total, count: counts.get(category) || 0 }))
+        .sort((a, b) => b.total - a.total);
+
+    const escapeCsv = (v) => {
+        const s = (v ?? '').toString();
+        if (/[",\n\r]/.test(s)) return '"' + s.replace(/"/g, '""') + '"';
+        return s;
+    };
+
+    const header = ['分類', '總金額', '筆數'];
+    const lines = [header.map(escapeCsv).join(',')]
+        .concat(rows.map(r => [r.category, Math.round(r.total), r.count].map(escapeCsv).join(',')));
+
+    const csv = lines.join('\n');
+    const blob = new Blob(["\uFEFF" + csv], { type: 'text/csv;charset=utf-8;' });
+
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const filename = `expense_category_summary_${y}-${m}-${d}.csv`;
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 500);
+}
+
+function getGoogleSheetUploadUrl() {
+    return (localStorage.getItem('googleSheetUploadUrl') || '').trim();
+}
+
+function setGoogleSheetUploadUrl() {
+    const current = getGoogleSheetUploadUrl();
+    const url = prompt('請輸入 Google Apps Script Web App URL（/exec）', current);
+    if (url == null) return;
+    const next = String(url).trim();
+    if (!next) {
+        localStorage.removeItem('googleSheetUploadUrl');
+        alert('已清除 Web App URL');
+        return;
+    }
+    localStorage.setItem('googleSheetUploadUrl', next);
+    alert('已儲存 Web App URL');
+}
+
+function buildAccountingRecordsTable(records) {
+    const header = [
+        'date',
+        'type',
+        'category',
+        'amount',
+        'note',
+        'account',
+        'member',
+        'emoji',
+        'isNextMonthBill',
+        'timestamp'
+    ];
+
+    const rows = records.map(r => {
+        const date = r?.date ?? '';
+        const type = r?.type ?? '';
+        const category = r?.category ?? '';
+        const amount = Number(String(r?.amount ?? 0).replace(/,/g, '')) || 0;
+        const note = r?.note ?? '';
+        const account = r?.account ?? '';
+        const member = r?.member ?? '';
+        const emoji = r?.emoji ?? '';
+        const isNextMonthBill = r?.isNextMonthBill ? 'true' : 'false';
+        const timestamp = r?.timestamp ?? '';
+        return [date, type, category, amount, note, account, member, emoji, isNextMonthBill, timestamp];
+    });
+
+    return [header, ...rows];
+}
+
+function uploadAllRecordsToGoogleSheet() {
+    uploadAllRecordsDetailsToGoogleSheet();
+}
+
+function uploadAllRecordsDetailsToGoogleSheet() {
+    const url = getGoogleSheetUploadUrl();
+    if (!url) {
+        alert('尚未設定 Web App URL');
+        setGoogleSheetUploadUrl();
+        return;
+    }
+
+    const records = JSON.parse(localStorage.getItem('accountingRecords') || '[]');
+    if (!records.length) {
+        alert('沒有找到任何記錄');
+        return;
+    }
+
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const sheetName = `Records-${y}-${m}-${d} ${hh}${mm}`;
+
+    const table = buildAccountingRecordsTable(records);
+    const payload = {
+        action: 'upload_table',
+        sheetName,
+        table
+    };
+
+    fetch(url, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+    }).then(() => {
+        alert(`已送出上傳，請到 Google Sheet 查看分頁：${sheetName}`);
+    }).catch((e) => {
+        alert('上傳失敗：' + (e && e.message ? e.message : e));
+    });
+}
+
+function maybeRemindMonthlyUpload() {
+    const now = new Date();
+    if (now.getDate() !== 20) return;
+
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const monthKey = `${y}-${m}`;
+    const storageKey = 'monthlyUploadReminderLastMonth';
+
+    const last = localStorage.getItem(storageKey);
+    if (last === monthKey) return;
+
+    localStorage.setItem(storageKey, monthKey);
+
+    const shouldGo = confirm('今天是每月20號，記得上傳本月記帳資料到 Google Sheet！\n\n要現在前往【設定】嗎？');
+    if (!shouldGo) return;
+    if (typeof showSettingsPage === 'function') {
+        showSettingsPage();
+        return;
+    }
+    const settingsNav = document.querySelector('.nav-item[data-page="settings"]');
+    if (settingsNav) settingsNav.click();
+}
+
+function buildIncomeExpenseCategorySummaryTable(records) {
+    const header = ['type', 'category', 'total_amount', 'count'];
+
+    const rowsByKey = new Map();
+    records.forEach(r => {
+        if (!r) return;
+        const type = r.type || 'expense';
+        if (type !== 'expense' && type !== 'income') return;
+        const category = (r.category || '未分類').toString();
+        const amount = Number(String(r.amount ?? 0).replace(/,/g, '')) || 0;
+        const key = `${type}__${category}`;
+        const cur = rowsByKey.get(key) || { type, category, total: 0, count: 0 };
+        cur.total += amount;
+        cur.count += 1;
+        rowsByKey.set(key, cur);
+    });
+
+    const rows = Array.from(rowsByKey.values())
+        .sort((a, b) => {
+            if (a.type !== b.type) return a.type.localeCompare(b.type);
+            return b.total - a.total;
+        })
+        .map(r => [r.type, r.category, Math.round(r.total), r.count]);
+
+    return [header, ...rows];
+}
+
+function uploadIncomeExpenseCategorySummaryToGoogleSheet() {
+    const url = getGoogleSheetUploadUrl();
+    if (!url) {
+        alert('尚未設定 Web App URL');
+        setGoogleSheetUploadUrl();
+        return;
+    }
+
+    const records = JSON.parse(localStorage.getItem('accountingRecords') || '[]');
+    if (!records.length) {
+        alert('沒有找到任何記錄');
+        return;
+    }
+
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, '0');
+    const d = String(now.getDate()).padStart(2, '0');
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const sheetName = `Summary-${y}-${m}-${d} ${hh}${mm}`;
+
+    const table = buildIncomeExpenseCategorySummaryTable(records);
+    if (table.length <= 1) {
+        alert('沒有找到收入/支出可加總的記錄');
+        return;
+    }
+
+    const payload = {
+        action: 'upload_table',
+        sheetName,
+        table
+    };
+
+    fetch(url, {
+        method: 'POST',
+        mode: 'no-cors',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+    }).then(() => {
+        alert(`已送出上傳，請到 Google Sheet 查看分頁：${sheetName}`);
+    }).catch((e) => {
+        alert('上傳失敗：' + (e && e.message ? e.message : e));
     });
 }
 
@@ -5824,7 +6112,12 @@ function getCategoryIcon(category) {
     // 檢查是否有自定義圖片圖標
     const customIcons = JSON.parse(localStorage.getItem('categoryCustomIcons') || '{}');
     if (customIcons[category] && customIcons[category].type === 'image') {
-        return `<img src="${customIcons[category].value}" alt="${category}" class="transaction-emoji-image">`;
+        return `<img src="${customIcons[category].value}" alt="${category}" class="transaction-emoji-image" onerror="this.outerHTML='📦'">`;
+    }
+
+    const defaultImg = getDefaultCategoryImage(category);
+    if (defaultImg) {
+        return `<img src="${defaultImg}" alt="${category}" class="transaction-emoji-image" onerror="this.outerHTML='📦'">`;
     }
     
     // 查找分類的默認圖標
@@ -8717,7 +9010,7 @@ function showAddCategoryDialog(type = 'expense') {
                 <!-- Emoji 輸入 -->
                 <div style="margin-bottom: 12px;">
                     <label style="display: block; font-size: 13px; color: #666; margin-bottom: 6px;">或輸入其他 Emoji</label>
-                    <input type="text" id="categoryIconInput" class="category-modal-input" placeholder="例如：🍔 🚇 💰" maxlength="2" style="width: 100%; padding: 12px; border: 2px solid #e0e0e0; border-radius: 12px; font-size: 20px; text-align: center; outline: none; transition: border-color 0.2s;" onfocus="this.style.borderColor='#ffb6d9'" onblur="this.style.borderColor='#e0e0e0'">
+                    <input type="text" id="categoryIconInput" class="category-modal-input" placeholder="例如：🍔 🚇 💰" style="width: 100%; padding: 12px; border: 2px solid #e0e0e0; border-radius: 12px; font-size: 20px; text-align: center; outline: none; transition: border-color 0.2s;" onfocus="this.style.borderColor='#ffb6d9'" onblur="this.style.borderColor='#e0e0e0'">
                 </div>
                 
                 <!-- 或上傳圖片 -->
@@ -8798,18 +9091,16 @@ function showAddCategoryDialog(type = 'expense') {
             
             buttons.forEach(btn => {
                 btn.addEventListener('click', (e) => {
-                    e.preventDefault();
                     e.stopPropagation();
                     const icon = btn.dataset.icon;
-                    console.log('點擊快速圖標:', icon);
                     iconInput.value = icon;
+                    iconPreview.textContent = icon;
                     selectedIconImage = null;
-                    iconPreview.innerHTML = `<span style="font-size: 40px;">${icon}</span>`;
                 });
             });
             
             console.log('✓ 快速圖標按鈕事件綁定完成');
-        }, 100);
+        }, 50);
     };
     
     // 類型選擇
@@ -8839,9 +9130,9 @@ function showAddCategoryDialog(type = 'expense') {
     // 初始渲染快速圖標
     renderQuickIcons(selectedType);
     
-    // Emoji 輸入時更新預覽
     iconInput.addEventListener('input', (e) => {
-        const icon = e.target.value.trim();
+        const icon = firstGrapheme(e.target.value);
+        e.target.value = icon;
         if (icon) {
             selectedIconImage = null; // 清除圖片
             iconPreview.innerHTML = `<span style="font-size: 40px;">${icon}</span>`;
@@ -8850,12 +9141,15 @@ function showAddCategoryDialog(type = 'expense') {
         }
     });
     
-    // 上傳圖片
     if (uploadBtn && fileInput) {
-        uploadBtn.addEventListener('click', () => {
+        const openPicker = () => {
             console.log('點擊上傳圖片按鈕');
+            fileInput.value = '';
             fileInput.click();
-        });
+        };
+
+        uploadBtn.addEventListener('click', openPicker);
+        uploadBtn.addEventListener('touchend', openPicker, { passive: true });
         
         fileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
@@ -8973,7 +9267,7 @@ function showAddCategoryDialog(type = 'expense') {
         const iconInput = modal.querySelector('#categoryIconInput');
         
         const name = nameInput.value.trim();
-        const icon = iconInput.value.trim() || '📦';
+        const icon = firstGrapheme(iconInput.value) || '📦';
         
         if (!name) {
             alert('請輸入分類名稱');
@@ -9176,8 +9470,14 @@ function showCategoryIconEditor(categoryName) {
     const preview = modal.querySelector('#currentIconPreview');
     
     uploadBtn.addEventListener('click', () => {
+        fileInput.value = '';
         fileInput.click();
     });
+
+    uploadBtn.addEventListener('touchend', () => {
+        fileInput.value = '';
+        fileInput.click();
+    }, { passive: true });
     
     fileInput.addEventListener('change', async (e) => {
         const file = e.target.files[0];
@@ -9280,17 +9580,21 @@ function initSettingsPage() {
     if (!settingsList) return;
     
     const settings = [
-        { icon: '📊', title: '年度報告', action: 'annualReport' },
-        { icon: '🎨', title: '主題顏色', action: 'theme' },
-        { icon: '🔤', title: '字體大小', action: 'fontSize' },
-        { icon: '📚', title: '操作教學', action: 'tutorial' },
-        { icon: '🖼️', title: '圖示管理', action: 'iconManage' },
-        { icon: '🧾', title: '分期規則', action: 'installmentRules' },
-        { icon: '💾', title: '備份資料', action: 'backup' },
-        { icon: '📥', title: '還原資料', action: 'restore' },
-        { icon: '📊', title: '匯出資料', action: 'export' },
-        { icon: '📂', title: '匯入檔案', action: 'import' },
-        { icon: '👨‍💻', title: '創作者', action: 'creator' }
+        { icon: '📊', title: '年報', action: 'annualReport' },
+        { icon: '🎨', title: '主題', action: 'theme' },
+        { icon: '🔤', title: '字體', action: 'fontSize' },
+        { icon: '📚', title: '教學', action: 'tutorial' },
+        { icon: '🖼️', title: '圖示', action: 'iconManage' },
+        { icon: '🔗', title: 'Sheet 網址', action: 'setGoogleSheetUploadUrl' },
+        { icon: '☁️', title: '上傳明細', action: 'uploadAllRecordsDetailsToGoogleSheet' },
+        { icon: '🧮', title: '上傳加總', action: 'uploadIncomeExpenseCategorySummaryToGoogleSheet' },
+        { icon: '🧾', title: '分類加總 CSV', action: 'exportExpenseCategorySummary' },
+        { icon: '🧾', title: '分期', action: 'installmentRules' },
+        { icon: '💾', title: '備份', action: 'backup' },
+        { icon: '📥', title: '還原', action: 'restore' },
+        { icon: '📊', title: '匯出', action: 'export' },
+        { icon: '📂', title: '匯入', action: 'import' },
+        { icon: '👨‍💻', title: '關於', action: 'creator' }
     ];
     
     let html = '';
@@ -9316,6 +9620,14 @@ function initSettingsPage() {
             } else if (action === 'restore') {
                 // 還原資料
                 restoreData();
+            } else if (action === 'setGoogleSheetUploadUrl') {
+                setGoogleSheetUploadUrl();
+            } else if (action === 'uploadAllRecordsDetailsToGoogleSheet') {
+                uploadAllRecordsDetailsToGoogleSheet();
+            } else if (action === 'uploadIncomeExpenseCategorySummaryToGoogleSheet') {
+                uploadIncomeExpenseCategorySummaryToGoogleSheet();
+            } else if (action === 'exportExpenseCategorySummary') {
+                exportExpenseCategorySummaryCsv();
             } else if (action === 'export') {
                 // 匯出資料
                 exportData();
@@ -13295,6 +13607,13 @@ document.addEventListener('DOMContentLoaded', () => {
     initBottomNav();
 
     initMonthSwitchers();
+
+    // 每月20號提醒上傳（延遲避免干擾初始化流程）
+    setTimeout(() => {
+        if (typeof maybeRemindMonthlyUpload === 'function') {
+            maybeRemindMonthlyUpload();
+        }
+    }, 1500);
 
     // 檢查小森每日開啟對話
     setTimeout(() => {
