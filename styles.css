@@ -1585,28 +1585,40 @@ width: 100%;
 
 .metric-price-wrapper--simple {
     flex-wrap: wrap;
+    align-items: stretch;
     gap: 12px;
+}
+
+.metric-price-wrapper--simple .metric-input-large {
+    flex: 0 1 auto;
+    width: auto;
+    min-width: 8ch;
+    max-width: 100%;
+}
+
+.metric-price-wrapper--simple .metric-quote-btn {
+    flex: 0 0 auto;
 }
 
 .metric-quote-btn {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    gap: 8px;
-    padding: 12px 14px;
+    gap: 6px;
+    padding: 8px 10px;
     border-radius: 12px;
     border: 2px solid rgba(102, 126, 234, 0.45);
     background: rgba(102, 126, 234, 0.12);
     color: var(--color-primary);
     text-decoration: none;
     font-weight: 700;
-    font-size: 14px;
+    font-size: 12px;
     line-height: 1;
     white-space: nowrap;
     cursor: pointer;
     transition: transform var(--transition-fast), box-shadow var(--transition-fast), border-color var(--transition-fast), background var(--transition-fast);
     box-shadow: 0 10px 24px rgba(0, 0, 0, 0.18);
-    min-height: 44px;
+    min-height: 34px;
 }
 
 .metric-quote-btn::before {
@@ -1634,9 +1646,17 @@ width: 100%;
         gap: 10px;
     }
 
+    .metric-price-wrapper--simple .metric-input-large {
+        width: 100%;
+        max-width: 100%;
+    }
+
     .metric-quote-btn {
         width: 100%;
         justify-content: center;
+        align-self: stretch;
+        white-space: normal;
+        line-height: 1.2;
     }
 }
 
