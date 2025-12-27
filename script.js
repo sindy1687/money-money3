@@ -5,6 +5,201 @@ let clickAudio = null;
 let incomeAudio = null;
 let audioFailed = { click: false, income: false }; // 記錄失敗狀態，避免重複嘗試
 
+function formatMonthKey(dateObj) {
+    const d = new Date(dateObj);
+    if (Number.isNaN(d.getTime())) return '';
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+function parseMonthKey(monthKey) {
+    if (!monthKey || typeof monthKey !== 'string') return null;
+    const m = monthKey.match(/^(\d{4})-(\d{2})$/);
+    if (!m) return null;
+    const year = Number(m[1]);
+    const monthIndex = Number(m[2]) - 1;
+    const d = new Date(year, monthIndex, 1);
+    return Number.isNaN(d.getTime()) ? null : d;
+}
+
+function getSelectedMonthKey() {
+    const stored = localStorage.getItem('selectedMonthKey');
+    if (stored && parseMonthKey(stored)) return stored;
+    return formatMonthKey(new Date());
+}
+
+function setSelectedMonthKey(monthKey) {
+    if (!parseMonthKey(monthKey)) return;
+    localStorage.setItem('selectedMonthKey', monthKey);
+    window.selectedMonthKey = monthKey;
+}
+
+function addMonthsToKey(monthKey, delta) {
+    const base = parseMonthKey(monthKey) || new Date();
+    const d = new Date(base.getFullYear(), base.getMonth() + delta, 1);
+    return formatMonthKey(d);
+}
+
+function getMonthRangeByKey(monthKey) {
+    const base = parseMonthKey(monthKey);
+    if (!base) return null;
+    const start = new Date(base.getFullYear(), base.getMonth(), 1);
+    const end = new Date(base.getFullYear(), base.getMonth() + 1, 0);
+    const toISO = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    return {
+        startDateStr: toISO(start),
+        endDateStr: toISO(end)
+    };
+}
+
+function renderSelectedMonthText() {
+    const monthKey = getSelectedMonthKey();
+    const summaryMonth = document.getElementById('summaryMonth');
+    if (summaryMonth) summaryMonth.textContent = monthKey;
+    const chartMonthText = document.getElementById('chartMonthText');
+    if (chartMonthText) chartMonthText.textContent = monthKey;
+}
+
+function applySelectedMonthToLedgerDateFilters(force = false) {
+    if (!force) return;
+
+    const range = getMonthRangeByKey(getSelectedMonthKey());
+    if (!range) return;
+
+    const filterDateFrom = document.getElementById('filterDateFrom');
+    const filterDateTo = document.getElementById('filterDateTo');
+
+    if (filterDateFrom) filterDateFrom.value = range.startDateStr;
+    if (filterDateTo) filterDateTo.value = range.endDateStr;
+}
+
+function refreshAllForSelectedMonth(forceLedgerDate = false) {
+    renderSelectedMonthText();
+
+    const pageLedger = document.getElementById('pageLedger');
+    if (pageLedger && pageLedger.style.display !== 'none') {
+        applySelectedMonthToLedgerDateFilters(forceLedgerDate);
+        if (typeof initLedger === 'function') {
+            initLedger();
+        }
+    }
+
+    const pageChart = document.getElementById('pageChart');
+    if (pageChart && pageChart.style.display !== 'none') {
+        if (typeof updateAllCharts === 'function') {
+            updateAllCharts();
+        }
+    }
+}
+
+let quoteProxyAvailability = {
+    reachable: null,
+    lastFailedAt: 0,
+    alertedAt: 0
+};
+
+const publicQuoteProxies = [
+    // Returns JSON wrapper: { contents: "..." }
+    'https://api.allorigins.win/raw?url=',
+    // Usually returns raw proxied content
+    'https://api.codetabs.com/v1/proxy/?quest=',
+    // Returns raw proxied content
+    'https://corsproxy.io/?',
+    // Sometimes requires full URL (no encoding)
+    'https://r.jina.ai/http://'
+];
+
+function isLocalQuoteProxyInCooldown() {
+    if (quoteProxyAvailability.reachable !== false) return false;
+    const now = Date.now();
+    return now - (quoteProxyAvailability.lastFailedAt || 0) < 5 * 60 * 1000;
+}
+
+function markQuoteProxyFailed() {
+    quoteProxyAvailability.reachable = false;
+    quoteProxyAvailability.lastFailedAt = Date.now();
+}
+
+function maybeAlertQuoteProxyDown() {
+    const now = Date.now();
+    if (now - (quoteProxyAvailability.alertedAt || 0) < 5 * 60 * 1000) return;
+    quoteProxyAvailability.alertedAt = now;
+
+    alert('目前無法連線到本機股價代理（localhost:5000）。\n\n系統將改用公開 CORS 代理抓取 Yahoo Finance（可能較慢或偶爾失敗）。');
+}
+
+async function fetchYahooChartViaPublicProxies(yahooUrl) {
+    for (const proxyBase of publicQuoteProxies) {
+        try {
+            const controller = new AbortController();
+            const timeoutId = setTimeout(() => controller.abort(), 10000);
+            try {
+                let finalUrl;
+                if (proxyBase.includes('r.jina.ai')) {
+                    const cleaned = yahooUrl.replace(/^https?:\/\//, '');
+                    finalUrl = `${proxyBase}${cleaned}`;
+                } else {
+                    finalUrl = `${proxyBase}${encodeURIComponent(yahooUrl)}`;
+                }
+
+                const resp = await fetch(finalUrl, { signal: controller.signal });
+                if (!resp || !resp.ok) continue;
+
+                const text = await resp.text();
+                let raw = text;
+
+                // Some proxies return JSON wrapper
+                try {
+                    const wrapped = JSON.parse(text);
+                    if (wrapped && typeof wrapped === 'object' && typeof wrapped.contents === 'string') {
+                        raw = wrapped.contents;
+                    }
+                } catch (_) {}
+
+                // r.jina.ai returns HTML-ish wrapper; try to extract JSON by finding first '{'
+                const firstBrace = raw.indexOf('{');
+                if (firstBrace > 0) raw = raw.slice(firstBrace);
+
+                const data = JSON.parse(raw);
+                if (data && data.chart && data.chart.result && data.chart.result.length > 0) {
+                    const result = data.chart.result[0];
+                    if (result && result.meta) {
+                        const currentPrice = result.meta.regularMarketPrice || result.meta.previousClose || null;
+                        if (currentPrice && currentPrice > 0) return currentPrice;
+                    }
+                }
+            } finally {
+                clearTimeout(timeoutId);
+            }
+        } catch (_) {
+            continue;
+        }
+    }
+    return null;
+}
+
+function initMonthSwitchers() {
+    const ledgerPrev = document.getElementById('ledgerPrevMonthBtn');
+    const ledgerNext = document.getElementById('ledgerNextMonthBtn');
+    const chartPrev = document.getElementById('chartPrevMonthBtn');
+    const chartNext = document.getElementById('chartNextMonthBtn');
+
+    const bind = (btn, delta) => {
+        if (!btn) return;
+        btn.addEventListener('click', () => {
+            const nextKey = addMonthsToKey(getSelectedMonthKey(), delta);
+            setSelectedMonthKey(nextKey);
+            refreshAllForSelectedMonth(true);
+        });
+    };
+
+    bind(ledgerPrev, -1);
+    bind(ledgerNext, 1);
+    bind(chartPrev, -1);
+    bind(chartNext, 1);
+
+    renderSelectedMonthText();
+}
+
 // 播放點擊音效（完全延遲加載，只在需要時創建）
 function playClickSound() {
     // 如果之前加載失敗，直接返回（完全禁用音效）
@@ -2140,7 +2335,7 @@ function initSaveButton() {
 // 投資記錄數據結構
 // buy: { stockCode, stockName, date, price, shares, fee, isDCA, note, timestamp }
 // sell: { stockCode, stockName, date, price, shares, fee, tax, note, timestamp, realizedPnl }
-// dividend: { stockCode, stockName, date, type, perShare, shares, amount, reinvest, note, timestamp }
+// dividend: { stockCode, stockName, date, exDividendDate, dividendType, perShare, historicalPerShare, shares, amount, reinvest, note, timestamp }
 
 // 常見投資標的映射表（股票、ETF、債券）- 全局變數
 // 從 JSON 文件載入
@@ -2550,7 +2745,7 @@ async function autoLoadStockPrices() {
                     console.log(`⏭️ ${code} 今天已有手動輸入的價格，跳過自動更新`);
                     continue;
                 }
-                
+
                 const price = await fetchStockPrice(code);
                 if (price) {
                     successCount++;
@@ -2558,10 +2753,12 @@ async function autoLoadStockPrices() {
                 } else {
                     console.log(`無法獲取 ${code} 價格，使用已保存的價格`);
                 }
+
                 // 每獲取一個價格就更新一次顯示，讓用戶看到即時更新
                 updateInvestmentSummary();
                 updateStockList();
-            } catch (err) {
+            }
+            catch (err) {
                 console.error(`獲取 ${code} 股價失敗:`, err);
             }
         }
@@ -2849,19 +3046,22 @@ function initDividendForm() {
             const stockCode = document.getElementById('dividendStockCode').value.trim();
             const dividendDate = document.getElementById('dividendDate').value;
             const dividendType = document.getElementById('dividendType').value;
-            const perShare = parseFloat(document.getElementById('dividendPerShare').value);
-            const shares = parseInt(document.getElementById('dividendShares').value);
-            const amount = parseFloat(document.getElementById('dividendAmount').value);
+            const perShareValue = parseFloat(document.getElementById('dividendPerShare').value);
+            const sharesValue = parseInt(document.getElementById('dividendShares').value);
+            let amount = parseFloat(document.getElementById('dividendAmount').value);
             const reinvest = document.getElementById('dividendReinvest').checked;
             const dividendNote = document.getElementById('dividendNote').value.trim();
-            
-            if (!stockCode || !dividendDate || !perShare || !shares || !amount) {
+            const exDateInput = document.getElementById('dividendExDate') || document.getElementById('dividendExDateInput');
+            const historicalPerShareInput = document.getElementById('dividendHistoricalPerShare') || document.getElementById('dividendHistoricalPerShareInput');
+
+            if ((!amount || amount <= 0) && perShareValue > 0 && sharesValue > 0) {
+                amount = perShareValue * sharesValue;
+                const amountInput = document.getElementById('dividendAmount');
+                if (amountInput) amountInput.value = amount.toFixed(2);
+            }
+
+            if (!stockCode || !dividendDate || perShareValue <= 0 || sharesValue <= 0 || amount <= 0) {
                 alert('請填寫所有必填欄位');
-        return;
-    }
-    
-            if (perShare <= 0 || shares <= 0 || amount <= 0) {
-                alert('股息金額必須大於0');
         return;
     }
     
@@ -2870,9 +3070,11 @@ function initDividendForm() {
                 stockCode: stockCode,
                 stockName: stockCode,
                 date: dividendDate,
+                exDividendDate: exDateInput?.value || '',
                 dividendType: dividendType,
-                perShare: perShare,
-                shares: shares,
+                perShare: perShareValue,
+                historicalPerShare: parseFloat(historicalPerShareInput?.value) || null,
+                shares: sharesValue,
         amount: amount,
                 reinvest: reinvest,
                 note: dividendNote,
@@ -2944,6 +3146,8 @@ function initDividendForm() {
             document.getElementById('dividendAmount').value = '';
             document.getElementById('dividendReinvest').checked = false;
             document.getElementById('dividendNote').value = '';
+            if (exDateInput) exDateInput.value = '';
+            if (historicalPerShareInput) historicalPerShareInput.value = '';
             
             // 更新顯示
             updateInvestmentSummary();
@@ -3077,21 +3281,28 @@ function showStockPriceQueryModal({ stockCode, stockName, isBondETF, defaultPric
         const overlay = document.createElement('div');
         overlay.className = 'modal-overlay';
 
-        const content = document.createElement('div');
-        content.className = 'modal-content price-query-modal__content';
-
+        const header = document.createElement('div');
+        header.className = 'price-query-modal__header';
         const title = document.createElement('h3');
-        title.className = 'modal-title';
-        title.textContent = `無法自動獲取 ${stockName} (${stockCode}) 的現價`;
+        title.textContent = `無法取得 ${stockName || stockCode} 現價`;
+        header.appendChild(title);
+
+        const queryBtn = document.createElement('button');
+        queryBtn.type = 'button';
+        queryBtn.className = 'price-query-modal__action';
+        queryBtn.textContent = '🔍 查詢';
+        queryBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            const targetSite = querySites[0];
+            if (targetSite && targetSite.url) {
+                window.open(targetSite.url, '_blank', 'noopener,noreferrer');
+            }
+        });
+        header.appendChild(queryBtn);
 
         const closeBtn = document.createElement('button');
-        closeBtn.className = 'modal-close-btn';
-        closeBtn.type = 'button';
-        closeBtn.textContent = '✕';
-
-        const header = document.createElement('div');
-        header.className = 'modal-header';
-        header.appendChild(title);
+        closeBtn.className = 'price-query-modal__close';
+        closeBtn.textContent = '×';
         header.appendChild(closeBtn);
 
         const body = document.createElement('div');
@@ -3235,167 +3446,82 @@ function showStockPriceQueryModal({ stockCode, stockName, isBondETF, defaultPric
             ? [`${stockCode}.TWO`, `${stockCode}.TW`]
             : [yahooSymbol];
 
-        // 使用 CORS 代理來訪問 Yahoo Finance API
-        // 由於瀏覽器 CORS 限制，直接使用代理服務
-        // 嘗試多個代理服務以提高成功率（按可靠性排序）
-            // 使用可靠的代理服務
-            // 注意：瀏覽器開發者工具可能會顯示網絡請求錯誤（CORS、500等），這是正常現象
-            // 代碼會正確處理這些錯誤並嘗試下一個代理
-            const proxies = [
-                'https://api.codetabs.com/v1/proxy?quest=',
-                'https://corsproxy.io/?url=',
-                'https://thingproxy.freeboard.io/fetch/'
-            ];
-            
+        // 1) Try local proxy if not in cooldown
+        const proxyEndpoint = 'http://localhost:5000/api/quote?symbols=';
+        if (!isLocalQuoteProxyInCooldown()) {
             for (const candidateSymbol of symbolCandidates) {
-                for (const proxyUrl of proxies) {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 8000);
+                try {
+                    const proxyUrl = `${proxyEndpoint}${encodeURIComponent(candidateSymbol)}`;
+                    const proxyResponse = await fetch(proxyUrl, {
+                        method: 'GET',
+                        headers: {
+                            'Accept': 'application/json'
+                        },
+                        signal: controller.signal
+                    });
+
+                    if (!proxyResponse || !proxyResponse.ok) {
+                        continue;
+                    }
+
+                    const responseText = await proxyResponse.text();
+                    let data;
                     try {
-                        let proxyResponse;
-                        const quoteUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(candidateSymbol)}`;
-                        const yahooUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${candidateSymbol}?interval=1d&range=1d`;
-                    
-                    // 創建超時控制器（8秒超時）
-                    const controller = new AbortController();
-                    const timeoutId = setTimeout(() => controller.abort(), 8000);
-                    
-                    try {
-                    if (proxyUrl.includes('allorigins')) {
-                        // allorigins 需要 encode URL
-                        try {
-                            const encodedUrl = encodeURIComponent(quoteUrl);
-                            proxyResponse = await fetch(proxyUrl + encodedUrl, {
-                            method: 'GET',
-                            headers: {
-                                'Accept': 'application/json',
-                                },
-                                signal: controller.signal
-                        });
-                            
-                            // 檢查響應狀態，如果返回錯誤狀態碼（如 500），直接跳過
-                            if (!proxyResponse.ok || proxyResponse.status >= 500) {
-                                clearTimeout(timeoutId);
-                                continue;
-                            }
-                        } catch (alloriginsError) {
-                            // 捕獲 allorigins 的 CORS 或網絡錯誤，靜默跳過
-                            clearTimeout(timeoutId);
+                        data = JSON.parse(responseText);
+                    } catch (parseError) {
+                        continue;
+                    }
+
+                    if (data && data.quoteResponse && data.quoteResponse.result && data.quoteResponse.result.length > 0) {
+                        const q = data.quoteResponse.result[0];
+                        const currentPrice = q.regularMarketPrice || q.postMarketPrice || q.preMarketPrice || q.regularMarketPreviousClose || null;
+                        if (currentPrice && currentPrice > 0) {
+                            saveStockCurrentPrice(stockCode, currentPrice, false);
+                            console.log(`✓ 成功獲取 ${stockCode} 價格: ${currentPrice}`);
+                            return currentPrice;
+                        }
+                    }
+
+                    if (data && data.chart && data.chart.result) {
+                        if (data.chart.result.length === 0) {
                             continue;
                         }
-                    } else if (proxyUrl.includes('codetabs')) {
-                        // codetabs 需要特殊格式
-                        proxyResponse = await fetch(proxyUrl + encodeURIComponent(quoteUrl), {
-                            method: 'GET',
-                            headers: {
-                                'Accept': 'application/json',
-                                },
-                                signal: controller.signal
-                            });
-                    } else if (proxyUrl.includes('corsproxy.io')) {
-                        proxyResponse = await fetch(proxyUrl + encodeURIComponent(quoteUrl), {
-                            method: 'GET',
-                            headers: {
-                                'Accept': 'application/json',
-                                },
-                                signal: controller.signal
-                            });
-                    } else {
-                        // 其他代理直接使用
-                        try {
-                            proxyResponse = await fetch(proxyUrl + quoteUrl, {
-                                method: 'GET',
-                                headers: {
-                                    'Accept': 'application/json',
-                                },
-                                signal: controller.signal
-                            });
-                        } catch (fetchError) {
-                            // 捕獲 fetch 錯誤（包括網絡錯誤），靜默跳過
-                            continue;
-                        }
-                    }
-                    } finally {
-                        clearTimeout(timeoutId);
-                    }
-                    
-                    // 檢查響應狀態
-                    if (!proxyResponse) {
-                        continue; // 沒有響應，嘗試下一個代理
-                    }
-                    
-                    // 處理錯誤狀態碼（靜默跳過，不顯示錯誤）
-                    // 包括：404、403、500（Internal Server Error）等
-                    // 注意：瀏覽器開發者工具仍可能顯示這些錯誤（如 404），這是正常的
-                    // 代碼會正確處理這些錯誤並嘗試下一個代理，無需擔心
-                    if (proxyResponse.status === 404 || proxyResponse.status === 403 || proxyResponse.status >= 500) {
-                        continue; // 靜默跳過錯誤狀態碼，嘗試下一個代理
-                    }
-                    
-                    // 只處理 200 狀態碼
-                    if (proxyResponse.status === 200 && proxyResponse.ok) {
-                        let data;
-                        const responseText = await proxyResponse.text();
-                        
-                        // 嘗試解析 JSON
-                        try {
-                            data = JSON.parse(responseText);
-                        } catch (parseError) {
-                            // 如果解析失敗，可能是 HTML 錯誤頁面
-                            continue; // 嘗試下一個代理
-                        }
-                        
-                        if (data && data.quoteResponse && data.quoteResponse.result && data.quoteResponse.result.length > 0) {
-                            const q = data.quoteResponse.result[0];
-                            const currentPrice = q.regularMarketPrice || q.postMarketPrice || q.preMarketPrice || q.regularMarketPreviousClose || null;
+
+                        const result = data.chart.result[0];
+                        if (result && result.meta && !result.error) {
+                            const currentPrice = result.meta.regularMarketPrice || result.meta.previousClose || null;
                             if (currentPrice && currentPrice > 0) {
                                 saveStockCurrentPrice(stockCode, currentPrice, false);
                                 console.log(`✓ 成功獲取 ${stockCode} 價格: ${currentPrice}`);
                                 return currentPrice;
                             }
                         }
-
-                        if (data && data.chart && data.chart.result) {
-                            // 檢查結果是否為空
-                            if (data.chart.result.length === 0) {
-                                continue; // 嘗試下一個代理
-                            }
-                            
-                            const result = data.chart.result[0];
-                            if (result && result.meta) {
-                                const meta = result.meta;
-                                
-                                // 檢查是否有錯誤訊息
-                                if (result.error) {
-                                    continue; // 嘗試下一個代理
-                                }
-                                
-                                const currentPrice = meta.regularMarketPrice || meta.previousClose || null;
-                                
-                                if (currentPrice && currentPrice > 0) {
-                                    saveStockCurrentPrice(stockCode, currentPrice, false); // false = 自動獲取
-                                    console.log(`✓ 成功獲取 ${stockCode} 價格: ${currentPrice}`);
-                                    return currentPrice;
-                                }
-                            }
-                        }
-                    } else {
-                        // 如果響應不成功（包括 502、503 等），靜默跳過
-                    continue; // 嘗試下一個代理
-                }
+                    }
                 } catch (proxyError) {
-                    // 靜默處理所有網絡錯誤（CORS、超時、網絡錯誤、404、403、域名解析失敗等）
-                    // 這些錯誤是預期的，因為代理服務可能不穩定或不可用
-                    // 注意：瀏覽器開發者工具可能仍會顯示這些錯誤（如 404），這是正常的
-                    // 代碼會正確處理這些錯誤並嘗試下一個代理，無需擔心
                     if (proxyError.name === 'AbortError') {
-                        // 超時錯誤，靜默跳過
                         continue;
                     }
-                    // 所有其他錯誤（包括 ERR_NAME_NOT_RESOLVED、403、404 等）都靜默跳過
-                    // 不顯示在控制台，直接嘗試下一個代理
-                    continue; // 嘗試下一個代理
-                }
+                    markQuoteProxyFailed();
+                    maybeAlertQuoteProxyDown();
+                    break;
+                } finally {
+                    clearTimeout(timeoutId);
                 }
             }
+        }
+
+        // 2) Public proxy fallback for ALL symbols
+        for (const candidateSymbol of symbolCandidates) {
+            const yahooChartUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${candidateSymbol}?interval=1d&range=1d`;
+            const currentPrice = await fetchYahooChartViaPublicProxies(yahooChartUrl);
+            if (currentPrice && currentPrice > 0) {
+                saveStockCurrentPrice(stockCode, currentPrice, false);
+                console.log(`✓ 透過公開代理成功獲取 ${stockCode} 價格: ${currentPrice}`);
+                return currentPrice;
+            }
+        }
 
         // 如果所有代理都失敗，嘗試使用備用方案（僅針對債券 ETF）
         // 注意：瀏覽器控制台可能仍會顯示 404 等錯誤，這是正常的，代碼會正確處理
@@ -3408,7 +3534,7 @@ function showStockPriceQueryModal({ stockCode, stockName, isBondETF, defaultPric
                 const testUrl = `https://query1.finance.yahoo.com/v8/finance/chart/${alternativeSymbol}?interval=1d&range=1d`;
                 
                 // 嘗試通過代理訪問
-                for (const proxyUrl of proxies) {
+                for (const proxyUrl of publicQuoteProxies) {
                     try {
                         let proxyResponse;
                         if (proxyUrl.includes('allorigins')) {
@@ -3909,6 +4035,87 @@ function updatePortfolioList() {
     portfolioList.innerHTML = html;
 }
 
+const INVESTMENT_RECORDS_PAGE_SIZE = 6;
+let investmentRecordsCurrentPage = 0;
+
+function parseRecordDate(record) {
+    if (!record) return 0;
+    if (record.date) {
+        const parsed = new Date(record.date);
+        if (!isNaN(parsed)) return parsed.getTime();
+    }
+    if (record.timestamp) {
+        const parsed = new Date(record.timestamp);
+        if (!isNaN(parsed)) return parsed.getTime();
+    }
+    return 0;
+}
+
+function getInvestmentRecordDateKey(record) {
+    if (!record) return 'unknown';
+    if (record.date) {
+        const parsed = new Date(record.date);
+        if (!isNaN(parsed)) return parsed.toISOString().split('T')[0];
+    }
+    if (record.timestamp) {
+        const parsed = new Date(record.timestamp);
+        if (!isNaN(parsed)) return parsed.toISOString().split('T')[0];
+    }
+    return 'unknown';
+}
+
+function formatInvestmentRecordDateLabel(key) {
+    if (!key || key === 'unknown') return '未設定日期';
+    const parsed = new Date(key);
+    if (isNaN(parsed)) return key;
+    return parsed.toLocaleDateString('zh-TW', { year: 'numeric', month: 'short', day: 'numeric', weekday: 'short' });
+}
+
+function getAmountLevelClass(amount) {
+    const value = Math.abs(amount || 0);
+    if (value >= 150000) return 'amount-level-high';
+    if (value >= 75000) return 'amount-level-mid';
+    if (value >= 30000) return 'amount-level-low';
+    return 'amount-level-soft';
+}
+
+function bindRecordOverflowMenu(container) {
+    if (!container || container.dataset.menuBound) return;
+    container.dataset.menuBound = '1';
+
+    container.addEventListener('click', (e) => {
+        const actionBtn = e.target.closest('.record-action-btn');
+        if (!actionBtn) return;
+
+        e.preventDefault();
+        e.stopPropagation();
+
+        const action = actionBtn.dataset.action;
+        const recordId = actionBtn.dataset.recordId;
+
+        if (!recordId) {
+            alert('無法獲取記錄ID');
+            return;
+        }
+
+        if (action === 'edit') {
+            editInvestmentRecord(recordId);
+        } else if (action === 'delete') {
+            deleteInvestmentRecord(recordId);
+        }
+    });
+}
+
+function renderRecordActionButtons(recordId) {
+    if (!recordId) return '';
+    return `
+        <div class="record-actions" data-record-id="${recordId}">
+            <button class="record-action-btn record-action-edit" type="button" aria-label="編輯紀錄" title="編輯" data-action="edit" data-record-id="${recordId}">✏️</button>
+            <button class="record-action-btn record-action-delete" type="button" aria-label="刪除紀錄" title="刪除" data-action="delete" data-record-id="${recordId}">🗑️</button>
+        </div>
+    `;
+}
+
 // 更新投資記錄列表
 function updateInvestmentRecords() {
     const records = JSON.parse(localStorage.getItem('investmentRecords') || '[]');
@@ -3920,155 +4127,192 @@ function updateInvestmentRecords() {
         recordsList.innerHTML = `
             <div class="empty-state">
                 <div style="font-size: 48px; margin-bottom: 16px;">📈</div>
-                <div>尚無投資記錄</div>
+                <div>尚無投資紀錄</div>
                 <div style="font-size: 12px; margin-top: 8px; color: #ccc; margin-bottom: 20px;">點擊下方按鈕開始記錄或匯入檔案</div>
                 <button class="budget-edit-btn budget-add-btn-full" onclick="importInvestmentData()" style="max-width: 300px; margin: 0 auto;">
-                    📂 匯入投資記錄
+                    📂 匯入投資紀錄
                 </button>
             </div>
         `;
         return;
     }
-    
-    // 按時間排序（最新的在前）
-    const sortedRecords = [...records].sort((a, b) => {
-        return new Date(b.timestamp) - new Date(a.timestamp);
-    });
-    
-    let html = '';
-    sortedRecords.forEach(record => {
-        const recordId = record.timestamp || record.id || Date.now().toString();
-        if (record.type === 'buy') {
-            const price = record.price != null ? record.price : 0;
-            const shares = record.shares || 0;
-            const totalAmount = Math.ceil(price * shares + (record.fee || 0));
 
-            let dcaLine = '';
-            if (record.isDCA) {
-                const cycleNo = parseInt(record.dcaCycleNumber, 10);
-                dcaLine = `<div>🔁 定期定額${!isNaN(cycleNo) && cycleNo > 0 ? `・第 ${cycleNo} 期` : ''}</div>`;
-            }
-            html += `
-                <div class="investment-record-item" data-record-id="${recordId}">
-                    <button class="record-edit-fab" data-record-id="${recordId}" title="編輯">✏️</button>
-                    <button class="record-delete-fab" data-record-id="${recordId}" title="刪除">🗑️</button>
-                    <button class="record-quick-buy-fab" data-stock-code="${record.stockCode || ''}" data-stock-name="${record.stockName || ''}" title="快捷買入">買入</button>
-                    <div class="record-header">
-                        <span class="record-type buy">買入</span>
-                        <span class="record-date">${record.date}</span>
+    const sortedRecords = [...records].sort((a, b) => parseRecordDate(b) - parseRecordDate(a));
+    const buyRecords = sortedRecords.filter(record => record.type === 'buy');
+    const otherRecords = sortedRecords.filter(record => record.type !== 'buy');
+
+    const totalPages = Math.max(1, Math.ceil(buyRecords.length / INVESTMENT_RECORDS_PAGE_SIZE));
+    if (investmentRecordsCurrentPage >= totalPages) {
+        investmentRecordsCurrentPage = totalPages - 1;
+    }
+
+    const pageStart = investmentRecordsCurrentPage * INVESTMENT_RECORDS_PAGE_SIZE;
+    const pageRecords = buyRecords.slice(pageStart, pageStart + INVESTMENT_RECORDS_PAGE_SIZE);
+
+    const grouped = {};
+    const groupOrder = [];
+    pageRecords.forEach(record => {
+        const key = getInvestmentRecordDateKey(record);
+        if (!grouped[key]) {
+            grouped[key] = [];
+            groupOrder.push(key);
+        }
+        grouped[key].push(record);
+    });
+
+    let html = `
+        <div class="investment-records-header">
+            <div>
+                <div class="investment-records-title">買入記錄</div>
+                <div class="investment-records-summary">共 ${buyRecords.length} 筆買入，分頁展示</div>
             </div>
-                    <div class="record-stock">${record.stockCode}</div>
-                    <div class="record-details">
-                        <div>價格：NT$${price.toFixed(2)}</div>
-                        <div>股數：${shares} 股</div>
-                        <div>手續費：NT$${(record.fee || 0).toLocaleString('zh-TW')}</div>
-                        ${dcaLine}
+            <div class="investment-records-pager">
+                <button class="investment-pager-btn" data-direction="prev" ${investmentRecordsCurrentPage === 0 ? 'disabled' : ''}>上一頁</button>
+                <span>第 ${investmentRecordsCurrentPage + 1} / ${totalPages} 頁</span>
+                <button class="investment-pager-btn" data-direction="next" ${investmentRecordsCurrentPage >= totalPages - 1 ? 'disabled' : ''}>下一頁</button>
             </div>
-                    <div class="record-amount">投入金額：NT$${(totalAmount != null ? totalAmount : 0).toLocaleString('zh-TW')}</div>
-                    ${record.note ? `<div class="text-secondary" style="margin-top: 8px; font-size: 12px;">備註：${record.note}</div>` : ''}
         </div>
     `;
-        } else if (record.type === 'sell') {
-            const price = record.price != null ? record.price : 0;
-            const shares = record.shares || 0;
-            const totalAmount = price * shares - (record.fee || 0) - (record.tax || 0);
-            html += `
-                <div class="investment-record-item" data-record-id="${recordId}">
-                    <button class="record-edit-fab" data-record-id="${recordId}" title="編輯">✏️</button>
-                    <button class="record-delete-fab" data-record-id="${recordId}" title="刪除">🗑️</button>
-                    <div class="record-header">
-                        <span class="record-type sell">賣出</span>
-                        <span class="record-date">${record.date}</span>
+
+    if (pageRecords.length === 0) {
+        html += `
+            <div class="empty-page">
+                <div>本頁暫無買入記錄</div>
+                <div class="text-secondary">請新增或切換到其他頁面</div>
             </div>
-                    <div class="record-stock">${record.stockCode}</div>
-                    <div class="record-details">
-                        <div>價格：NT$${(record.price != null ? record.price : 0).toFixed(2)}</div>
-                        <div>股數：${record.shares || 0} 股</div>
-                        <div>手續費：NT$${(record.fee || 0).toLocaleString('zh-TW')}</div>
-                        <div>證交稅：NT$${(record.tax || 0).toLocaleString('zh-TW')}</div>
-                    </div>
-                    <div class="record-amount">實收金額：NT$${(totalAmount != null ? totalAmount : 0).toLocaleString('zh-TW')}</div>
-                    <div class="record-amount ${(record.realizedPnl || 0) >= 0 ? 'positive' : 'negative'}">
-                        實現損益：${(record.realizedPnl || 0) >= 0 ? '+' : ''}NT$${(record.realizedPnl != null ? record.realizedPnl : 0).toLocaleString('zh-TW')}
-                </div>
-                    ${record.note ? `<div class="text-secondary" style="margin-top: 8px; font-size: 12px;">備註：${record.note}</div>` : ''}
+        `;
+    } else {
+        groupOrder.forEach(key => {
+            html += `
+                <div class="investment-record-date">
+                    ${formatInvestmentRecordDateLabel(key)}
                 </div>
             `;
-        } else if (record.type === 'dividend') {
-            html += `
-                <div class="investment-record-item" data-record-id="${recordId}">
-                    <button class="record-edit-fab" data-record-id="${recordId}" title="編輯">✏️</button>
-                    <button class="record-delete-fab" data-record-id="${recordId}" title="刪除">🗑️</button>
-                    <div class="record-header">
-                        <span class="record-type dividend">${record.dividendType === 'cash' ? '現金股利' : '股票股利'}</span>
-                        <span class="record-date">${record.date}</span>
-                </div>
-                    <div class="record-stock">${record.stockCode}</div>
-                    <div class="record-details">
-                        <div>每股：NT$${(record.perShare != null ? record.perShare : 0).toFixed(2)}</div>
-                        <div>股數：${record.shares || 0} 股</div>
-                        ${record.reinvest ? '<div>再投入 ✓</div>' : ''}
-                </div>
-                    <div class="record-amount">實收金額：NT$${(record.amount != null ? record.amount : 0).toLocaleString('zh-TW')}</div>
-                    ${record.note ? `<div class="text-secondary" style="margin-top: 8px; font-size: 12px;">備註：${record.note}</div>` : ''}
-        </div>
-    `;
-        }
-    });
-    
-    recordsList.innerHTML = html;
-    
-    // 綁定編輯按鈕事件 - 立即綁定，不使用延遲
-        recordsList.querySelectorAll('.record-edit-fab').forEach(btn => {
-        // 移除舊的事件監聽器（如果有的話）
-        const newBtn = btn.cloneNode(true);
-        btn.parentNode.replaceChild(newBtn, btn);
-        
-        newBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-            const recordId = newBtn.dataset.recordId;
-                if (recordId) {
-                    editInvestmentRecord(recordId);
-                } else {
-                    alert('無法獲取記錄ID');
+            grouped[key].forEach(record => {
+                const recordId = record.timestamp || record.id || Date.now().toString();
+                const price = record.price != null ? record.price : 0;
+                const shares = record.shares || 0;
+                const totalAmount = Math.ceil(price * shares + (record.fee || 0));
+                const amountClass = getAmountLevelClass(totalAmount);
+                let dcaLine = '';
+                if (record.isDCA) {
+                    const cycleNo = parseInt(record.dcaCycleNumber, 10);
+                    dcaLine = `<div>🔁 定期定額${!isNaN(cycleNo) && cycleNo > 0 ? `・第 ${cycleNo} 期` : ''}</div>`;
                 }
+                html += `
+                    <div class="investment-record-item amount-glow ${amountClass}" data-record-id="${recordId}">
+                        <button class="record-quick-buy-fab" data-stock-code="${record.stockCode || ''}" data-stock-name="${record.stockName || ''}" title="快捷買入">買入</button>
+                        <div class="record-header">
+                            <div class="record-header-info">
+                                <span class="record-type buy">買入</span>
+                                <span class="record-date">${record.date}</span>
+                            </div>
+                            ${renderRecordActionButtons(recordId)}
+                        </div>
+                        <div class="record-stock">${record.stockCode}</div>
+                        <div class="record-details">
+                            <div>價格：NT$${price.toFixed(2)}</div>
+                            <div>股數：${shares} 股</div>
+                            <div>手續費：NT$${(record.fee || 0).toLocaleString('zh-TW')}</div>
+                            ${dcaLine}
+                        </div>
+                        <div class="record-amount ${amountClass}">投入金額：NT$${(totalAmount != null ? totalAmount : 0).toLocaleString('zh-TW')}</div>
+                        ${record.note ? `<div class="text-secondary" style="margin-top: 8px; font-size: 12px;">備註：${record.note}</div>` : ''}
+                    </div>
+                `;
             });
         });
-    
-    // 綁定刪除按鈕事件（所有記錄類型）
-    recordsList.querySelectorAll('.record-delete-fab').forEach(btn => {
-        const newBtn = btn.cloneNode(true);
-        btn.parentNode.replaceChild(newBtn, btn);
-        
-        newBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            const recordId = newBtn.dataset.recordId;
-            if (recordId) {
-                deleteInvestmentRecord(recordId);
-            } else {
-                alert('無法獲取記錄ID');
+    }
+
+    if (otherRecords.length > 0) {
+        html += `
+            <div class="investment-records-secondary">
+                <div class="investment-records-title investment-records-secondary-title">其他紀錄</div>
+        `;
+        otherRecords.forEach(record => {
+            const recordId = record.timestamp || record.id || Date.now().toString();
+            if (record.type === 'sell') {
+                const price = record.price != null ? record.price : 0;
+                const shares = record.shares || 0;
+                const totalAmount = price * shares - (record.fee || 0) - (record.tax || 0);
+                html += `
+                    <div class="investment-record-item" data-record-id="${recordId}">
+                        <div class="record-header">
+                            <div class="record-header-info">
+                                <span class="record-type sell">賣出</span>
+                                <span class="record-date">${record.date}</span>
+                            </div>
+                            ${renderRecordActionButtons(recordId)}
+                        </div>
+                        <div class="record-stock">${record.stockCode}</div>
+                        <div class="record-details">
+                            <div>價格：NT$${(record.price != null ? record.price : 0).toFixed(2)}</div>
+                            <div>股數：${record.shares || 0} 股</div>
+                            <div>手續費：NT$${(record.fee || 0).toLocaleString('zh-TW')}</div>
+                            <div>證交稅：NT$${(record.tax || 0).toLocaleString('zh-TW')}</div>
+                        </div>
+                        <div class="record-amount">實收金額：NT$${(totalAmount != null ? totalAmount : 0).toLocaleString('zh-TW')}</div>
+                        <div class="record-amount ${(record.realizedPnl || 0) >= 0 ? 'positive' : 'negative'}">
+                            實現損益：${(record.realizedPnl || 0) >= 0 ? '+' : ''}NT$${(record.realizedPnl != null ? record.realizedPnl : 0).toLocaleString('zh-TW')}
+                        </div>
+                        ${record.note ? `<div class="text-secondary" style="margin-top: 8px; font-size: 12px;">備註：${record.note}</div>` : ''}
+                    </div>
+                `;
+            } else if (record.type === 'dividend') {
+                html += `
+                    <div class="investment-record-item" data-record-id="${recordId}">
+                        <div class="record-header">
+                            <div class="record-header-info">
+                                <span class="record-type dividend">${record.dividendType === 'cash' ? '現金股利' : '股票股利'}</span>
+                                <span class="record-date">${record.date}</span>
+                            </div>
+                            ${renderRecordActionButtons(recordId)}
+                        </div>
+                        <div class="record-stock">${record.stockCode}</div>
+                        <div class="record-details">
+                            <div>每股：NT$${(record.perShare != null ? record.perShare : 0).toFixed(2)}</div>
+                            <div>股數：${record.shares || 0} 股</div>
+                            ${record.exDividendDate ? `<div>除息日：${record.exDividendDate}</div>` : ''}
+                            ${record.historicalPerShare ? `<div>過去每股：NT$${Number(record.historicalPerShare).toFixed(2)}</div>` : ''}
+                            ${record.reinvest ? '<div>再投入 ✓</div>' : ''}
+                        </div>
+                        <div class="record-amount">實收金額：NT$${(record.amount != null ? record.amount : 0).toLocaleString('zh-TW')}</div>
+                        ${record.note ? `<div class="text-secondary" style="margin-top: 8px; font-size: 12px;">備註：${record.note}</div>` : ''}
+                    </div>
+                `;
+            }
+        });
+        html += `</div>`;
+    }
+
+    recordsList.innerHTML = html;
+
+    recordsList.querySelectorAll('.investment-pager-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const direction = btn.dataset.direction;
+            if (direction === 'prev' && investmentRecordsCurrentPage > 0) {
+                investmentRecordsCurrentPage -= 1;
+                updateInvestmentRecords();
+            } else if (direction === 'next' && investmentRecordsCurrentPage < totalPages - 1) {
+                investmentRecordsCurrentPage += 1;
+                updateInvestmentRecords();
             }
         });
     });
+
+    bindRecordOverflowMenu(recordsList);
 
     // 綁定買入快捷按鈕事件（只在買入卡片上）
     recordsList.querySelectorAll('.record-quick-buy-fab').forEach(btn => {
         const newBtn = btn.cloneNode(true);
         btn.parentNode.replaceChild(newBtn, btn);
-
         newBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             e.preventDefault();
             playClickSound();
-
             const stockCode = newBtn.dataset.stockCode || '';
             const stockName = newBtn.dataset.stockName || '';
-
             showInvestmentInputPage('buy');
-
-            // 等待買入輸入頁面顯示後填入
             setTimeout(() => {
                 const codeInput = document.getElementById('calcStockCodeInput');
                 const nameInput = document.getElementById('calcStockNameInput');
@@ -4161,6 +4405,7 @@ function initBottomNav() {
                     if (typeof initChart === 'function') {
                         initChart();
                     }
+                    renderSelectedMonthText();
                     if (typeof updateAllCharts === 'function') {
                         updateAllCharts();
                     }
@@ -4187,6 +4432,7 @@ function initBottomNav() {
                     // 隱藏記帳輸入頁面的 header
                     const headerSection = document.querySelector('.header-section');
                     if (headerSection) headerSection.style.display = 'none';
+                    renderSelectedMonthText();
                     // 初始化記帳本頁面
                     if (typeof initLedger === 'function') {
                         initLedger();
@@ -4232,6 +4478,8 @@ function goBackToLedger() {
     const dividendInputPage = document.getElementById('dividendInputPage');
     const dcaManagementPage = document.getElementById('dcaManagementPage');
     const dcaSetupPage = document.getElementById('dcaSetupPage');
+    const installmentManagementPage = document.getElementById('installmentManagementPage');
+    const installmentSetupPage = document.getElementById('installmentSetupPage');
     const bottomNav = document.querySelector('.bottom-nav');
     const investmentActions = document.querySelector('.investment-actions');
     const inputSection = document.getElementById('inputSection');
@@ -4251,6 +4499,8 @@ function goBackToLedger() {
     if (dividendInputPage) dividendInputPage.style.display = 'none';
     if (dcaManagementPage) dcaManagementPage.style.display = 'none';
     if (dcaSetupPage) dcaSetupPage.style.display = 'none';
+    if (installmentManagementPage) installmentManagementPage.style.display = 'none';
+    if (installmentSetupPage) installmentSetupPage.style.display = 'none';
     if (inputSection) inputSection.style.display = 'none';
     
     // 顯示記帳本頁面
@@ -4323,7 +4573,10 @@ function initLedger() {
     }
     
     // 顯示交易列表（應用所有篩選後的記錄）
-    displayLedgerTransactions(filteredRecords);
+    const filterDateFrom = document.getElementById('filterDateFrom');
+    const filterDateTo = document.getElementById('filterDateTo');
+    const hasDateFilter = !!((filterDateFrom && filterDateFrom.value) || (filterDateTo && filterDateTo.value));
+    displayLedgerTransactions(filteredRecords, hasDateFilter);
 }
 
 // 初始化搜尋和篩選功能
@@ -4364,7 +4617,8 @@ function initSearchAndFilters() {
         filteredRecords = applyAllFilters(filteredRecords);
         
         // 更新顯示
-        displayLedgerTransactions(filteredRecords);
+        const hasDateFilter = !!((filterDateFrom && filterDateFrom.value) || (filterDateTo && filterDateTo.value));
+        displayLedgerTransactions(filteredRecords, hasDateFilter);
     };
     
     if (searchInput) {
@@ -4527,8 +4781,7 @@ function filterRecordsByType(records, type) {
 
 // 更新記帳本摘要
 function updateLedgerSummary(records, type = null) {
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const currentMonth = getSelectedMonthKey();
     
     const summaryMonth = document.getElementById('summaryMonth');
     if (summaryMonth) {
@@ -4637,7 +4890,7 @@ function displayLedgerTransactions(records, showAll = false) {
     const grouped = {};
     records.forEach(record => {
         const date = new Date(record.date);
-        const dateKey = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+        const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
         const dayName = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][date.getDay()];
         const fullDateKey = `${dateKey} ${dayName}`;
         
@@ -4659,9 +4912,7 @@ function displayLedgerTransactions(records, showAll = false) {
     
     // 按日期排序（最新的在前）
     const sortedDates = Object.keys(grouped).sort((a, b) => {
-        const dateA = a.split(' ')[0].split('-').map(Number);
-        const dateB = b.split(' ')[0].split('-').map(Number);
-        return new Date(2024, dateB[0] - 1, dateB[1]) - new Date(2024, dateA[0] - 1, dateA[1]);
+        return b.localeCompare(a);
     });
     
     // 如果不是顯示全部，只顯示今天的記錄
@@ -4669,21 +4920,26 @@ function displayLedgerTransactions(records, showAll = false) {
     let hasMoreRecords = false;
     if (!showAll) {
         const today = new Date();
-        const todayKey = `${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
-        
+        const todayKey = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
         displayDates = sortedDates.filter(dateKey => {
-            const dateParts = dateKey.split(' ')[0].split('-').map(Number);
-            const recordDateKey = `${String(dateParts[0]).padStart(2, '0')}-${String(dateParts[1]).padStart(2, '0')}`;
-            return recordDateKey === todayKey;
+            return dateKey.startsWith(todayKey);
         });
-        
+
         hasMoreRecords = sortedDates.length > displayDates.length;
     }
     
     let html = '';
     displayDates.forEach(dateKey => {
+        // 優化日期顯示：如果是當年，隱藏年份讓畫面更流暢
+        let displayHeader = dateKey;
+        const currentYear = new Date().getFullYear();
+        if (dateKey.startsWith(String(currentYear) + '-')) {
+            displayHeader = dateKey.substring(5); // 移除 "YYYY-"
+        }
+
         html += `<div class="transaction-group">`;
-        html += `<div class="group-header">${dateKey}</div>`;
+        html += `<div class="group-header">${displayHeader}</div>`;
         
         grouped[dateKey].forEach((record, index) => {
             const amount = record.amount || 0;
@@ -5011,7 +5267,7 @@ function showHistoryRecords(records) {
         const grouped = {};
         filteredRecords.forEach(record => {
             const date = new Date(record.date);
-            const dateKey = `${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+            const dateKey = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
             const dayName = ['星期日', '星期一', '星期二', '星期三', '星期四', '星期五', '星期六'][date.getDay()];
             const fullDateKey = `${dateKey} ${dayName}`;
             
@@ -5032,15 +5288,20 @@ function showHistoryRecords(records) {
         
         // 按日期排序（最新的在前）
         const sortedDates = Object.keys(grouped).sort((a, b) => {
-            const dateA = a.split(' ')[0].split('-').map(Number);
-            const dateB = b.split(' ')[0].split('-').map(Number);
-            return new Date(2024, dateB[0] - 1, dateB[1]) - new Date(2024, dateA[0] - 1, dateA[1]);
+            return b.localeCompare(a);
         });
         
         let html = '';
         sortedDates.forEach(dateKey => {
+            // 優化日期顯示：如果是當年，隱藏年份
+            let displayHeader = dateKey;
+            const currentYear = new Date().getFullYear();
+            if (dateKey.startsWith(String(currentYear) + '-')) {
+                displayHeader = dateKey.substring(5);
+            }
+
             html += `<div class="history-transaction-group">`;
-            html += `<div class="history-group-header">${dateKey}</div>`;
+            html += `<div class="history-group-header">${displayHeader}</div>`;
             
             grouped[dateKey].forEach((record) => {
                 const amount = record.amount || 0;
@@ -5587,7 +5848,8 @@ let monthCompareChartInstance = null;
 
 // 提供理財建議
 function provideFinancialAdvice(records) {
-    const now = new Date();
+    const selectedBase = parseMonthKey(getSelectedMonthKey()) || new Date();
+    const now = new Date(selectedBase.getFullYear(), selectedBase.getMonth(), 1);
     const currentMonth = now.getMonth();
     const currentYear = now.getFullYear();
     
@@ -6238,11 +6500,8 @@ function updateMonthCompareChart() {
 
     const insightEl = document.getElementById('monthCompareInsight');
     const records = JSON.parse(localStorage.getItem('accountingRecords') || '[]');
-    const now = new Date();
-
-    const thisMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
-    const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-    const lastMonthKey = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, '0')}`;
+    const thisMonthKey = getSelectedMonthKey();
+    const lastMonthKey = addMonthsToKey(thisMonthKey, -1);
 
     const isExpense = (r) => r && (r.type === 'expense' || !r.type);
     const monthKeyOf = (dateStr) => {
@@ -6396,8 +6655,7 @@ function updatePieChart() {
     const insightEl = document.getElementById('pieChartInsight');
     
     const records = JSON.parse(localStorage.getItem('accountingRecords') || '[]');
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const currentMonth = getSelectedMonthKey();
     
     // 過濾本月支出記錄
     const monthRecords = records.filter(record => {
@@ -6488,8 +6746,7 @@ function updateBarChart() {
     const insightEl = document.getElementById('barChartInsight');
     
     const records = JSON.parse(localStorage.getItem('accountingRecords') || '[]');
-    const now = new Date();
-    const currentMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const currentMonth = getSelectedMonthKey();
     
     // 過濾本月支出記錄
     const monthRecords = records.filter(record => {
@@ -7408,11 +7665,11 @@ function initDailyBudgetPage(categoryName = '生活費') {
         if (nextMonthBills.length > 0) {
             const nextMonthTotal = nextMonthBills.reduce((sum, record) => sum + (record.amount || 0), 0);
             nextMonthBillsHtml = `
-                <div class="summary-item" style="background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.05) 100%); border-radius: 12px; padding: 12px; cursor: pointer;" onclick="showNextMonthBills('${categoryName}')">
+                <button class="summary-item summary-item--cta" type="button" data-category="${categoryName}">
                     <div class="summary-label">下月預約扣款</div>
-                    <div class="summary-value" style="color: #667eea;">NT$${nextMonthTotal.toLocaleString('zh-TW')}</div>
-                    <div style="font-size: 11px; color: var(--text-tertiary); margin-top: 4px;">共 ${nextMonthBills.length} 筆 · 點擊查看</div>
-                </div>
+                    <div class="summary-value highlight">NT$${nextMonthTotal.toLocaleString('zh-TW')}</div>
+                    <div class="summary-cta-text">共 ${nextMonthBills.length} 筆 · 點擊查看</div>
+                </button>
             `;
         }
     }
@@ -7421,7 +7678,7 @@ function initDailyBudgetPage(categoryName = '生活費') {
     const summary = document.getElementById('dailyBudgetSummary');
     if (summary) {
         summary.innerHTML = `
-            <div class="daily-budget-summary-card">
+            <div class="daily-budget-summary-card" id="dailyBudgetSummaryCard">
                 <div class="summary-item">
                     <div class="summary-label">總預算</div>
                     <div class="summary-value">NT$${budget.toLocaleString('zh-TW')}</div>
@@ -7449,6 +7706,17 @@ function initDailyBudgetPage(categoryName = '生活費') {
                 ${nextMonthBillsHtml}
             </div>
         `;
+    }
+    
+    // 綁定下月預約扣款按鈕
+    const summaryCard = document.getElementById('dailyBudgetSummaryCard');
+    if (summaryCard) {
+        summaryCard.querySelectorAll('.summary-item--cta').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const cat = btn.dataset.category || '卡費';
+                showNextMonthBills(cat);
+            });
+        });
     }
     
     // 生成每日日曆
@@ -7751,125 +8019,94 @@ function showNextMonthBills(categoryName) {
     // 創建模態框
     const modal = document.createElement('div');
     modal.className = 'next-month-bills-modal';
-    modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 10006; display: flex; align-items: center; justify-content: center; padding: 20px;';
     
-    let billsHtml = '';
-    if (nextMonthBills.length === 0) {
-        billsHtml = '<div style="text-align: center; padding: 40px; color: var(--text-tertiary);">沒有下月預約扣款</div>';
-    } else {
-        nextMonthBills.forEach(record => {
+    const panel = document.createElement('div');
+    panel.className = 'next-month-bills-panel';
+    
+    const billsHtml = nextMonthBills.length === 0
+        ? '<div class="next-month-bills-empty">沒有下月預約扣款</div>'
+        : nextMonthBills.map(record => {
             const recordDate = new Date(record.date);
             const day = recordDate.getDate();
             const recordId = record.timestamp || record.id || '';
             const noteText = record.note && record.note !== '(下月帳單)' ? record.note.replace('(下月帳單)', '').trim() : '';
-            
-            billsHtml += `
-                <div class="next-month-bill-item" style="background: var(--bg-light); border-radius: 16px; margin-bottom: 12px; border-left: 4px solid #667eea; overflow: hidden; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
-                    <!-- 主要內容區 -->
-                    <div style="display: flex; align-items: center; gap: 12px; padding: 14px;">
-                        <div style="font-size: 28px; flex-shrink: 0; width: 44px; height: 44px; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, rgba(102, 126, 234, 0.15), rgba(118, 75, 162, 0.1)); border-radius: 12px;">💳</div>
-                        <div style="flex: 1; min-width: 0;">
-                            <div style="font-weight: 700; color: var(--text-primary); margin-bottom: 2px; font-size: 16px;">${nextMonthNum + 1}月${day}日</div>
-                            ${noteText ? `<div style="font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${noteText}</div>` : '<div style="font-size: 11px; color: var(--text-tertiary);">無備註</div>'}
+            return `
+                <div class="next-month-bill-item">
+                    <div class="next-month-bill-main">
+                        <div class="next-month-bill-icon">💳</div>
+                        <div class="next-month-bill-info">
+                            <div class="next-month-bill-date">${nextMonthNum + 1}月${day}日</div>
+                            <div class="next-month-bill-note ${noteText ? '' : 'is-empty'}">${noteText || '無備註'}</div>
                         </div>
-                        <div style="text-align: right; flex-shrink: 0;">
-                            <div style="font-size: 18px; font-weight: 700; color: #667eea;">NT$${(record.amount || 0).toLocaleString('zh-TW')}</div>
-                        </div>
+                        <div class="next-month-bill-amount">NT$${(record.amount || 0).toLocaleString('zh-TW')}</div>
                     </div>
-                    <!-- 操作按鈕區 -->
-                    <div style="display: flex; border-top: 1px solid rgba(0,0,0,0.05); background: rgba(255,255,255,0.5);">
-                        <button class="edit-next-month-bill-btn" data-record-id="${recordId}" style="flex: 1; padding: 12px; background: none; border: none; border-right: 1px solid rgba(0,0,0,0.05); cursor: pointer; font-size: 14px; font-weight: 600; color: #667eea; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 6px;">
-                            <span style="font-size: 16px;">✏️</span>
-                            <span>編輯</span>
+                    <div class="next-month-bill-actions">
+                        <button class="next-month-bill-btn next-month-bill-btn--edit edit-next-month-bill-btn" data-record-id="${recordId}" type="button">
+                            <span>✏️</span><span>編輯</span>
                         </button>
-                        <button class="delete-next-month-bill-btn" data-record-id="${recordId}" style="flex: 1; padding: 12px; background: none; border: none; cursor: pointer; font-size: 14px; font-weight: 600; color: #ef4444; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 6px;">
-                            <span style="font-size: 16px;">🗑️</span>
-                            <span>刪除</span>
+                        <button class="next-month-bill-btn next-month-bill-btn--delete delete-next-month-bill-btn" data-record-id="${recordId}" type="button">
+                            <span>🗑️</span><span>刪除</span>
                         </button>
                     </div>
                 </div>
             `;
-        });
-    }
+        }).join('');
     
-    modal.innerHTML = `
-        <div style="background: linear-gradient(135deg, #ffffff 0%, #f8f9ff 100%); border-radius: 20px 20px 0 0; width: 100%; max-width: 100%; height: 90vh; display: flex; flex-direction: column; box-shadow: 0 -4px 24px rgba(0, 0, 0, 0.15); position: fixed; bottom: 0; left: 0; animation: slideUp 0.3s ease-out;">
-            <!-- 頂部標題欄 -->
-            <div style="flex-shrink: 0; padding: 20px; border-bottom: 1px solid rgba(0,0,0,0.08); background: linear-gradient(135deg, rgba(102, 126, 234, 0.08), rgba(118, 75, 162, 0.05));">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
-                    <h2 style="margin: 0; font-size: 20px; font-weight: 700; color: var(--text-primary); display: flex; align-items: center; gap: 8px;">
-                        <span style="font-size: 24px;">📅</span>
-                        <span>${nextMonthName}預約扣款</span>
-                    </h2>
-                    <button class="next-month-close-btn" style="background: rgba(0,0,0,0.05); border: none; font-size: 24px; cursor: pointer; color: #666; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 50%; transition: all 0.2s; flex-shrink: 0;">×</button>
+    panel.innerHTML = `
+        <div class="next-month-bills-header">
+            <div class="next-month-bills-header-bar">
+                <div class="next-month-bills-title">
+                    <span>📅</span>
+                    <span>${nextMonthName}預約扣款</span>
                 </div>
-                
-                <!-- 預算設定按鈕 -->
-                ${hasSetBudget ? `
-                    <div style="padding: 12px; background: linear-gradient(135deg, rgba(34, 197, 94, 0.15), rgba(22, 163, 74, 0.1)); border-radius: 12px; border: 1px solid rgba(34, 197, 94, 0.3); margin-bottom: 8px;">
-                        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px;">
-                            <div style="font-size: 11px; color: var(--text-secondary); font-weight: 600; display: flex; align-items: center; gap: 6px;">
-                                <span>✓</span>
-                                <span>已設定下月預算</span>
-                            </div>
-                            <div style="font-size: 16px; font-weight: 700; color: #22c55e;">NT$${setBudgetAmount.toLocaleString('zh-TW')}</div>
-                        </div>
-                        <div style="font-size: 10px; color: var(--text-tertiary);">將在 ${nextMonthName} 自動生效</div>
-                    </div>
-                ` : ''}
-                <button class="set-next-month-budget-btn" data-category="${categoryName}" data-next-month-year="${nextMonthYear}" data-next-month-num="${nextMonthNum}" data-total-amount="${totalAmount}" style="width: 100%; padding: 12px; background: linear-gradient(135deg, #667eea, #764ba2); color: white; border: none; border-radius: 12px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.2s; display: flex; align-items: center; justify-content: center; gap: 8px; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);">
-                    <span style="font-size: 18px;">💰</span>
-                    <span>${hasSetBudget ? '修改下月卡費預算' : '設定下月卡費預算'}</span>
-                </button>
+                <button class="next-month-close-btn" type="button">×</button>
             </div>
-            
-            <!-- 扣款明細列表 -->
-            <div style="flex: 1; overflow-y: auto; padding: 16px; -webkit-overflow-scrolling: touch;">
-                <div style="margin-bottom: 12px; font-size: 13px; font-weight: 600; color: var(--text-secondary); display: flex; align-items: center; gap: 6px;">
-                    <span>📋</span>
-                    <span>扣款明細</span>
-                </div>
-                ${billsHtml}
-            </div>
-            
-            <!-- 底部提示 -->
-            <div style="flex-shrink: 0; padding: 16px; border-top: 1px solid rgba(0,0,0,0.08); background: rgba(255,255,255,0.9);">
-                <div style="padding: 12px; background: rgba(102, 126, 234, 0.05); border-radius: 10px; border: 1px solid rgba(102, 126, 234, 0.15);">
-                    <div style="font-size: 11px; color: var(--text-secondary); line-height: 1.5; display: flex; gap: 8px;">
-                        <span style="flex-shrink: 0;">💡</span>
-                        <span>這些是您標記為「下月扣款」的卡費記錄，不會計入本月預算統計。</span>
+            ${hasSetBudget ? `
+                <div class="next-month-budget-card">
+                    <div class="label">
+                        <span>✓</span>
+                        <span>已設定下月預算</span>
                     </div>
+                    <div class="value">NT$${setBudgetAmount.toLocaleString('zh-TW')}</div>
+                    <div class="hint">將在 ${nextMonthName} 自動生效</div>
                 </div>
+            ` : ''}
+            <button class="set-next-month-budget-btn" data-category="${categoryName}" data-next-month-year="${nextMonthYear}" data-next-month-num="${nextMonthNum}" data-total-amount="${totalAmount}" type="button">
+                <span>💰</span>
+                <span>${hasSetBudget ? '修改下月卡費預算' : '設定下月卡費預算'}</span>
+            </button>
+        </div>
+        <div class="next-month-bills-list">
+            <div class="next-month-bills-list-title">
+                <span>📋</span>
+                <span>扣款明細</span>
+            </div>
+            ${billsHtml}
+        </div>
+        <div class="next-month-bills-footer">
+            <div class="next-month-bills-tip">
+                <span>💡</span>
+                <span>這些是您標記為「下月扣款」的卡費記錄，不會計入本月預算統計。</span>
             </div>
         </div>
-        
-        <style>
-            @keyframes slideUp {
-                from {
-                    transform: translateY(100%);
-                    opacity: 0;
-                }
-                to {
-                    transform: translateY(0);
-                    opacity: 1;
-                }
-            }
-        </style>
     `;
     
+    modal.appendChild(panel);
     document.body.appendChild(modal);
     
+    const closeModal = () => {
+        if (!document.body.contains(modal)) return;
+        panel.classList.add('closing');
+        setTimeout(() => {
+            if (document.body.contains(modal)) {
+                document.body.removeChild(modal);
+            }
+        }, 230);
+    };
+    
     // 綁定預算設定按鈕事件
-    const setBudgetBtn = modal.querySelector('.set-next-month-budget-btn');
+    const setBudgetBtn = panel.querySelector('.set-next-month-budget-btn');
     if (setBudgetBtn) {
-        setBudgetBtn.addEventListener('touchstart', () => {
-            setBudgetBtn.style.transform = 'scale(0.98)';
-            setBudgetBtn.style.boxShadow = '0 2px 8px rgba(102, 126, 234, 0.3)';
-        });
-        setBudgetBtn.addEventListener('touchend', () => {
-            setBudgetBtn.style.transform = 'scale(1)';
-            setBudgetBtn.style.boxShadow = '0 4px 12px rgba(102, 126, 234, 0.3)';
-        });
         setBudgetBtn.addEventListener('click', () => {
             const category = setBudgetBtn.dataset.category;
             const nextYear = parseInt(setBudgetBtn.dataset.nextMonthYear);
@@ -7880,13 +8117,7 @@ function showNextMonthBills(categoryName) {
     }
     
     // 綁定編輯按鈕事件
-    modal.querySelectorAll('.edit-next-month-bill-btn').forEach(btn => {
-        btn.addEventListener('touchstart', () => {
-            btn.style.background = 'rgba(102, 126, 234, 0.15)';
-        });
-        btn.addEventListener('touchend', () => {
-            btn.style.background = 'none';
-        });
+    panel.querySelectorAll('.edit-next-month-bill-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             const recordId = btn.dataset.recordId;
@@ -7897,13 +8128,7 @@ function showNextMonthBills(categoryName) {
     });
     
     // 綁定刪除按鈕事件
-    modal.querySelectorAll('.delete-next-month-bill-btn').forEach(btn => {
-        btn.addEventListener('touchstart', () => {
-            btn.style.background = 'rgba(239, 68, 68, 0.15)';
-        });
-        btn.addEventListener('touchend', () => {
-            btn.style.background = 'none';
-        });
+    panel.querySelectorAll('.delete-next-month-bill-btn').forEach(btn => {
         btn.addEventListener('click', (e) => {
             e.stopPropagation();
             const recordId = btn.dataset.recordId;
@@ -7914,67 +8139,17 @@ function showNextMonthBills(categoryName) {
     });
     
     // 關閉按鈕
-    const closeBtn = modal.querySelector('.next-month-close-btn');
-    closeBtn.addEventListener('touchstart', () => {
-        closeBtn.style.background = 'rgba(0, 0, 0, 0.1)';
-        closeBtn.style.transform = 'scale(0.95)';
-    });
-    closeBtn.addEventListener('touchend', () => {
-        closeBtn.style.background = 'rgba(0, 0, 0, 0.05)';
-        closeBtn.style.transform = 'scale(1)';
-    });
-    closeBtn.addEventListener('click', () => {
-        if (document.body.contains(modal)) {
-            // 添加關閉動畫
-            const content = modal.querySelector('div');
-            if (content) {
-                content.style.animation = 'slideDown 0.3s ease-out';
-                setTimeout(() => {
-                    if (document.body.contains(modal)) {
-                        document.body.removeChild(modal);
-                    }
-                }, 250);
-            } else {
-                document.body.removeChild(modal);
-            }
-        }
-    });
+    const closeBtn = panel.querySelector('.next-month-close-btn');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', closeModal);
+    }
     
     // 點擊遮罩關閉
     modal.addEventListener('click', (e) => {
         if (e.target === modal) {
-            if (document.body.contains(modal)) {
-                // 添加關閉動畫
-                const content = modal.querySelector('div');
-                if (content) {
-                    content.style.animation = 'slideDown 0.3s ease-out';
-                    setTimeout(() => {
-                        if (document.body.contains(modal)) {
-                            document.body.removeChild(modal);
-                        }
-                    }, 250);
-                } else {
-                    document.body.removeChild(modal);
-                }
-            }
+            closeModal();
         }
     });
-    
-    // 添加關閉動畫的 CSS
-    const style = document.createElement('style');
-    style.textContent = `
-        @keyframes slideDown {
-            from {
-                transform: translateY(0);
-                opacity: 1;
-            }
-            to {
-                transform: translateY(100%);
-                opacity: 0;
-            }
-        }
-    `;
-    document.head.appendChild(style);
 }
 
 // 編輯下月卡費記錄
@@ -9106,6 +9281,7 @@ function initSettingsPage() {
         { icon: '🔤', title: '字體大小', action: 'fontSize' },
         { icon: '📚', title: '操作教學', action: 'tutorial' },
         { icon: '🖼️', title: '圖示管理', action: 'iconManage' },
+        { icon: '🧾', title: '分期規則', action: 'installmentRules' },
         { icon: '💾', title: '備份資料', action: 'backup' },
         { icon: '📥', title: '還原資料', action: 'restore' },
         { icon: '📊', title: '匯出資料', action: 'export' },
@@ -9160,9 +9336,466 @@ function initSettingsPage() {
             } else if (action === 'annualReport') {
                 // 年度報告
                 showAnnualReport();
+            } else if (action === 'installmentRules') {
+                showInstallmentManagementPage();
             }
         });
     });
+}
+
+function getInstallmentRules() {
+    return JSON.parse(localStorage.getItem('installmentRules') || '[]');
+}
+
+function setInstallmentRules(rules) {
+    localStorage.setItem('installmentRules', JSON.stringify(rules));
+}
+
+function normalizeMonthKey(monthKey) {
+    if (!monthKey) return '';
+    const m = String(monthKey).trim();
+    if (/^\d{4}-\d{2}$/.test(m)) return m;
+    if (/^\d{4}\/\d{2}$/.test(m)) return m.replace('/', '-');
+    return m;
+}
+
+function getInstallmentPaidPeriods(ruleId) {
+    const allRecords = JSON.parse(localStorage.getItem('accountingRecords') || '[]');
+    const set = new Set();
+    allRecords.forEach(r => {
+        if (r && r.installmentRuleId === ruleId && Number.isFinite(r.installmentPeriodNumber)) {
+            set.add(Number(r.installmentPeriodNumber));
+        }
+    });
+    return set.size;
+}
+
+function showInstallmentManagementPage() {
+    const pageSettings = document.getElementById('pageSettings');
+    const page = document.getElementById('installmentManagementPage');
+    const setup = document.getElementById('installmentSetupPage');
+    const bottomNav = document.querySelector('.bottom-nav');
+    if (pageSettings) pageSettings.style.display = 'none';
+    if (setup) setup.style.display = 'none';
+    if (page) page.style.display = 'block';
+    if (bottomNav) bottomNav.style.display = 'none';
+    updateInstallmentList();
+}
+
+function showSettingsPage() {
+    const pageSettings = document.getElementById('pageSettings');
+    const installmentManagementPage = document.getElementById('installmentManagementPage');
+    const installmentSetupPage = document.getElementById('installmentSetupPage');
+    const bottomNav = document.querySelector('.bottom-nav');
+
+    if (installmentManagementPage) installmentManagementPage.style.display = 'none';
+    if (installmentSetupPage) installmentSetupPage.style.display = 'none';
+    if (pageSettings) pageSettings.style.display = 'block';
+    if (bottomNav) bottomNav.style.display = 'flex';
+    if (typeof initSettingsPage === 'function') {
+        initSettingsPage();
+    }
+}
+
+function updateInstallmentPerPeriodPreview() {
+    const totalAmount = parseFloat(document.getElementById('installmentTotalAmountInput')?.value) || 0;
+    const totalPeriods = parseInt(document.getElementById('installmentTotalPeriodsInput')?.value, 10) || 0;
+    const previewEl = document.getElementById('installmentPerPeriodAmountInput');
+    if (!previewEl) return;
+    if (totalAmount > 0 && totalPeriods > 0) {
+        previewEl.value = Math.round(totalAmount / totalPeriods);
+    } else {
+        previewEl.value = '';
+    }
+}
+
+function showInstallmentSetupPage(ruleId = null, mode = 'edit') {
+    const page = document.getElementById('installmentSetupPage');
+    const management = document.getElementById('installmentManagementPage');
+    const titleEl = document.getElementById('installmentSetupTitle');
+    const voidBtn = document.getElementById('installmentVoidBtn');
+    const reviseBtn = document.getElementById('installmentReviseBtn');
+
+    if (management) management.style.display = 'none';
+    if (page) page.style.display = 'block';
+
+    window.editingInstallmentRuleId = null;
+    window.revisingInstallmentRuleId = null;
+
+    const setForm = (rule) => {
+        const nameEl = document.getElementById('installmentNameInput');
+        const catEl = document.getElementById('installmentCategoryInput');
+        const totalAmountEl = document.getElementById('installmentTotalAmountInput');
+        const totalPeriodsEl = document.getElementById('installmentTotalPeriodsInput');
+        const dayEl = document.getElementById('installmentDayInput');
+        const startMonthEl = document.getElementById('installmentStartMonthInput');
+        const enabledEl = document.getElementById('installmentEnabledInput');
+
+        if (nameEl) nameEl.value = rule?.name || '';
+        if (catEl) catEl.value = rule?.category || '';
+        if (totalAmountEl) totalAmountEl.value = rule?.totalAmount ?? '';
+        if (totalPeriodsEl) totalPeriodsEl.value = rule?.totalPeriods ?? '';
+        if (dayEl) dayEl.value = rule?.day ?? 1;
+        if (startMonthEl) startMonthEl.value = rule?.startMonthKey || '';
+        if (enabledEl) enabledEl.checked = !!(rule?.enabled ?? true);
+
+        updateInstallmentPerPeriodPreview();
+    };
+
+    if (!ruleId) {
+        if (titleEl) titleEl.textContent = '新增分期規則';
+        if (voidBtn) voidBtn.style.display = 'none';
+        if (reviseBtn) reviseBtn.style.display = 'none';
+        setForm({ day: 1, enabled: true });
+        return;
+    }
+
+    const rules = getInstallmentRules();
+    const rule = rules.find(r => r.id === ruleId);
+    if (!rule) {
+        if (titleEl) titleEl.textContent = '新增分期規則';
+        if (voidBtn) voidBtn.style.display = 'none';
+        if (reviseBtn) reviseBtn.style.display = 'none';
+        setForm({ day: 1, enabled: true });
+        return;
+    }
+
+    if (mode === 'revise') {
+        window.revisingInstallmentRuleId = ruleId;
+        if (titleEl) titleEl.textContent = '修正分期';
+        if (voidBtn) voidBtn.style.display = 'none';
+        if (reviseBtn) reviseBtn.style.display = 'none';
+        setForm(rule);
+        return;
+    }
+
+    window.editingInstallmentRuleId = ruleId;
+    if (titleEl) titleEl.textContent = '編輯分期規則';
+    if (voidBtn) voidBtn.style.display = 'inline-flex';
+    if (reviseBtn) reviseBtn.style.display = 'inline-flex';
+    setForm(rule);
+}
+
+function saveInstallmentRule() {
+    const name = document.getElementById('installmentNameInput')?.value?.trim() || '';
+    const category = document.getElementById('installmentCategoryInput')?.value?.trim() || '';
+    const totalAmount = parseFloat(document.getElementById('installmentTotalAmountInput')?.value) || 0;
+    const totalPeriods = parseInt(document.getElementById('installmentTotalPeriodsInput')?.value, 10) || 0;
+    const day = parseInt(document.getElementById('installmentDayInput')?.value, 10) || 0;
+    const startMonthKey = normalizeMonthKey(document.getElementById('installmentStartMonthInput')?.value || '');
+    const enabled = !!document.getElementById('installmentEnabledInput')?.checked;
+
+    if (!name || !category || !totalAmount || !totalPeriods || !day || !startMonthKey) {
+        alert('請填寫所有必填欄位');
+        return;
+    }
+    if (totalAmount <= 0) {
+        alert('總金額必須大於 0');
+        return;
+    }
+    if (totalPeriods <= 0) {
+        alert('期數必須大於 0');
+        return;
+    }
+    if (day < 1 || day > 28) {
+        alert('扣款日期必須在 1-28 號之間');
+        return;
+    }
+    if (!/^\d{4}-\d{2}$/.test(startMonthKey)) {
+        alert('起始月份格式錯誤，請選擇月份（例如 2025-01）');
+        return;
+    }
+
+    const perPeriodAmount = Math.round(totalAmount / totalPeriods);
+    const nowIso = new Date().toISOString();
+    let rules = getInstallmentRules();
+
+    if (window.revisingInstallmentRuleId) {
+        const oldId = window.revisingInstallmentRuleId;
+        const oldRule = rules.find(r => r.id === oldId);
+        const carriedPaidPeriods = oldRule
+            ? Math.min(parseInt(oldRule.totalPeriods, 10) || 0, (parseInt(oldRule.carriedPaidPeriods, 10) || 0) + getInstallmentPaidPeriods(oldId))
+            : 0;
+
+        // 舊規則標記為已修正
+        rules = rules.map(r => r.id === oldId ? { ...r, enabled: false, status: 'revised', revisedAt: nowIso } : r);
+
+        const newRule = {
+            id: Date.now().toString(),
+            name,
+            category,
+            totalAmount,
+            totalPeriods,
+            perPeriodAmount,
+            day,
+            startMonthKey,
+            enabled,
+            status: 'active',
+            createdAt: nowIso,
+            revisedFromRuleId: oldId,
+            carriedPaidPeriods
+        };
+        rules.push(newRule);
+        setInstallmentRules(rules);
+        window.revisingInstallmentRuleId = null;
+        showInstallmentManagementPage();
+        checkAndGenerateInstallments();
+        return;
+    }
+
+    if (window.editingInstallmentRuleId) {
+        const id = window.editingInstallmentRuleId;
+        const idx = rules.findIndex(r => r.id === id);
+        if (idx !== -1) {
+            rules[idx] = {
+                ...rules[idx],
+                name,
+                category,
+                totalAmount,
+                totalPeriods,
+                perPeriodAmount,
+                day,
+                startMonthKey,
+                enabled,
+                status: enabled ? 'active' : 'inactive',
+                updatedAt: nowIso
+            };
+        }
+    } else {
+        const newRule = {
+            id: Date.now().toString(),
+            name,
+            category,
+            totalAmount,
+            totalPeriods,
+            perPeriodAmount,
+            day,
+            startMonthKey,
+            enabled,
+            status: 'active',
+            createdAt: nowIso,
+            carriedPaidPeriods: 0
+        };
+        rules.push(newRule);
+    }
+
+    setInstallmentRules(rules);
+    showInstallmentManagementPage();
+    checkAndGenerateInstallments();
+}
+
+function deleteInstallmentRule(ruleId) {
+    if (!ruleId) return;
+    if (!confirm('確定要刪除此分期規則嗎？\n\n刪除後不會再自動產生記帳。\n\n已經產生的記帳紀錄將保留。')) return;
+    const rules = getInstallmentRules().filter(r => r.id !== ruleId);
+    setInstallmentRules(rules);
+    showInstallmentManagementPage();
+}
+
+function reviseInstallmentRule(ruleId) {
+    if (!ruleId) return;
+    showInstallmentSetupPage(ruleId, 'revise');
+}
+
+function updateInstallmentList() {
+    const container = document.getElementById('installmentListContainer');
+    if (!container) return;
+
+    const rules = getInstallmentRules();
+    if (rules.length === 0) {
+        container.innerHTML = `
+            <div class="empty-state">
+                <div class="empty-icon">🧾</div>
+                <div class="empty-text">尚無分期規則</div>
+                <div class="empty-hint">點擊右上角「➕」新增分期規則</div>
+            </div>
+        `;
+        return;
+    }
+
+    const sorted = [...rules].sort((a, b) => {
+        const aTime = a?.createdAt ? new Date(a.createdAt).getTime() : 0;
+        const bTime = b?.createdAt ? new Date(b.createdAt).getTime() : 0;
+        return bTime - aTime;
+    });
+
+    let html = '';
+    sorted.forEach(rule => {
+        const enabled = !!rule.enabled && rule.status !== 'revised';
+        const statusText = enabled ? '啟用中' : (rule.status === 'revised' ? '已修正' : '已停用');
+        const statusClass = enabled ? 'active' : 'inactive';
+
+        const carried = parseInt(rule.carriedPaidPeriods, 10) || 0;
+        const paidGenerated = getInstallmentPaidPeriods(rule.id);
+        const paid = Math.min((parseInt(rule.totalPeriods, 10) || 0), carried + paidGenerated);
+        const totalPeriods = parseInt(rule.totalPeriods, 10) || 0;
+        const remainingPeriods = Math.max(0, totalPeriods - paid);
+
+        const perAmount = parseFloat(rule.perPeriodAmount) || 0;
+        const paidAmount = Math.max(0, Math.round(paid * perAmount));
+        const totalAmount = parseFloat(rule.totalAmount) || 0;
+        const remainingAmount = Math.max(0, Math.round(totalAmount - paidAmount));
+
+        html += `
+            <div class="dca-item-card">
+                <div class="dca-item-header">
+                    <div class="dca-item-icon">🧾</div>
+                    <div class="dca-item-info">
+                        <div class="dca-item-name">${rule.name || '未命名分期'}</div>
+                        <div class="dca-item-code">${rule.category || '未分類'}</div>
+                    </div>
+                    <div class="dca-item-status ${statusClass}">${statusText}</div>
+                </div>
+                <div class="dca-item-body">
+                    <div class="dca-item-row">
+                        <span class="dca-item-label">每期金額</span>
+                        <span class="dca-item-value">NT$${Math.round(perAmount).toLocaleString('zh-TW')}</span>
+                    </div>
+                    <div class="dca-item-row">
+                        <span class="dca-item-label">扣款日期</span>
+                        <span class="dca-item-value">每月 ${rule.day} 號</span>
+                    </div>
+                    <div class="dca-item-row">
+                        <span class="dca-item-label">起始月份</span>
+                        <span class="dca-item-value">${rule.startMonthKey || '-'}</span>
+                    </div>
+                    <div class="dca-progress">
+                        <div class="dca-progress-header">
+                            <span class="dca-progress-text">已繳：第 ${paid} 期 / ${totalPeriods} 期（剩餘 ${remainingPeriods} 期）</span>
+                        </div>
+                        <div class="dca-progress-bar" aria-label="分期進度條">
+                            <div class="dca-progress-fill" style="width: ${totalPeriods > 0 ? Math.min(100, Math.round((paid / totalPeriods) * 100)) : 0}%"></div>
+                        </div>
+                        <div style="margin-top: 8px; display: flex; justify-content: space-between; font-size: 12px; color: var(--text-secondary);">
+                            <span>已繳 NT$${paidAmount.toLocaleString('zh-TW')}</span>
+                            <span>剩餘 NT$${remainingAmount.toLocaleString('zh-TW')}</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="dca-item-actions">
+                    <button class="dca-edit-btn" onclick="editInstallmentRule('${rule.id}')">編輯</button>
+                </div>
+            </div>
+        `;
+    });
+
+    container.innerHTML = html;
+}
+
+function editInstallmentRule(ruleId) {
+    showInstallmentSetupPage(ruleId, 'edit');
+}
+
+function monthKeyFromDate(dateObj) {
+    const y = dateObj.getFullYear();
+    const m = String(dateObj.getMonth() + 1).padStart(2, '0');
+    return `${y}-${m}`;
+}
+
+function parseMonthKeyToDate(monthKey) {
+    const mk = normalizeMonthKey(monthKey);
+    if (!/^\d{4}-\d{2}$/.test(mk)) return null;
+    const [y, m] = mk.split('-').map(Number);
+    return new Date(y, m - 1, 1);
+}
+
+function addMonthsToMonthKey(monthKey, delta) {
+    const d = parseMonthKeyToDate(monthKey);
+    if (!d) return monthKey;
+    d.setMonth(d.getMonth() + delta);
+    return monthKeyFromDate(d);
+}
+
+function checkAndGenerateInstallments() {
+    try {
+        const today = new Date();
+        const currentDay = today.getDate();
+        const currentMonthKey = monthKeyFromDate(today);
+
+        const rules = getInstallmentRules();
+        if (!rules.length) return;
+
+        let accountingRecords = JSON.parse(localStorage.getItem('accountingRecords') || '[]');
+
+        const existingIndex = new Set();
+        accountingRecords.forEach(r => {
+            if (r && r.installmentRuleId && Number.isFinite(r.installmentPeriodNumber)) {
+                existingIndex.add(`${r.installmentRuleId}#${Number(r.installmentPeriodNumber)}`);
+            }
+        });
+
+        let mutated = false;
+
+        rules.forEach(rule => {
+            const enabled = !!rule.enabled && rule.status !== 'revised';
+            if (!enabled) return;
+
+            const totalPeriods = parseInt(rule.totalPeriods, 10) || 0;
+            if (totalPeriods <= 0) return;
+
+            const day = parseInt(rule.day, 10) || 1;
+            if (day < 1 || day > 28) return;
+
+            const perAmount = parseFloat(rule.perPeriodAmount) || 0;
+            if (perAmount <= 0) return;
+
+            const carried = parseInt(rule.carriedPaidPeriods, 10) || 0;
+            const startMonthKey = normalizeMonthKey(rule.startMonthKey);
+            if (!/^\d{4}-\d{2}$/.test(startMonthKey)) return;
+
+            const startDate = parseMonthKeyToDate(startMonthKey);
+            if (!startDate) return;
+
+            const paidGenerated = getInstallmentPaidPeriods(rule.id);
+            const alreadyPaid = Math.min(totalPeriods, carried + paidGenerated);
+            if (alreadyPaid >= totalPeriods) return;
+
+            for (let periodNumber = alreadyPaid + 1; periodNumber <= totalPeriods; periodNumber++) {
+                const monthIndex = periodNumber - carried - 1;
+                if (monthIndex < 0) continue;
+                const dueMonthKey = addMonthsToMonthKey(startMonthKey, monthIndex);
+
+                const isDueMonthPast = dueMonthKey < currentMonthKey;
+                const isDueMonthNow = dueMonthKey === currentMonthKey;
+                const dueReached = isDueMonthPast || (isDueMonthNow && currentDay >= day);
+                if (!dueReached) break;
+
+                const idxKey = `${rule.id}#${periodNumber}`;
+                if (existingIndex.has(idxKey)) continue;
+
+                const dueDateObj = parseMonthKeyToDate(dueMonthKey);
+                if (!dueDateObj) continue;
+                const dueDate = new Date(dueDateObj.getFullYear(), dueDateObj.getMonth(), day);
+                const dueDateStr = `${dueDate.getFullYear()}-${String(dueDate.getMonth() + 1).padStart(2, '0')}-${String(dueDate.getDate()).padStart(2, '0')}`;
+
+                const record = {
+                    type: 'expense',
+                    category: rule.category || '未分類',
+                    amount: Math.round(perAmount),
+                    note: `${rule.name || '分期'}：第 ${periodNumber} 期 / ${totalPeriods} 期`,
+                    date: dueDateStr,
+                    timestamp: new Date().toISOString(),
+                    installmentRuleId: rule.id,
+                    installmentPeriodNumber: periodNumber,
+                    installmentDueMonthKey: dueMonthKey
+                };
+
+                accountingRecords.push(record);
+                existingIndex.add(idxKey);
+                mutated = true;
+            }
+        });
+
+        if (mutated) {
+            localStorage.setItem('accountingRecords', JSON.stringify(accountingRecords));
+            const ledgerPage = document.getElementById('pageLedger');
+            if (ledgerPage && ledgerPage.style.display !== 'none' && typeof initLedger === 'function') {
+                initLedger();
+            }
+        }
+    } catch (e) {
+        console.error('checkAndGenerateInstallments failed', e);
+    }
 }
 
 // ========== 年度報告功能 ==========
@@ -9232,68 +9865,68 @@ function showAnnualReport() {
     
     let expenseRankingHtml = '';
     if (expenseRanking.length === 0) {
-        expenseRankingHtml = '<div style="text-align: center; padding: 20px; color: #999;">尚無支出記錄</div>';
+        expenseRankingHtml = '<div class="annual-report-empty" style="text-align: center; padding: 20px; color: #999;">尚無支出記錄</div>';
     } else {
         expenseRanking.forEach((item, index) => {
             const percentage = ((item.amount / totalExpense) * 100).toFixed(1);
             expenseRankingHtml += `
-                <div style="display: flex; align-items: center; padding: 12px; border-bottom: 1px solid #f0f0f0;">
-                    <div style="width: 30px; text-align: center; font-weight: 600; color: #666;">${index + 1}</div>
-                    <div style="flex: 1; font-size: 15px; color: #333;">${item.category}</div>
-                    <div style="font-size: 15px; font-weight: 600; color: #f44336;">NT$${item.amount.toLocaleString('zh-TW')}</div>
-                    <div style="width: 60px; text-align: right; font-size: 13px; color: #999; margin-left: 12px;">${percentage}%</div>
+                <div class="annual-report-rank-row" style="display: flex; align-items: center; padding: 12px; border-bottom: 1px solid #f0f0f0;">
+                    <div class="annual-report-rank-index" style="width: 30px; text-align: center; font-weight: 600; color: #666;">${index + 1}</div>
+                    <div class="annual-report-rank-category" style="flex: 1; font-size: 15px; color: #333;">${item.category}</div>
+                    <div class="annual-report-rank-amount" style="font-size: 15px; font-weight: 600; color: #f44336;">NT$${item.amount.toLocaleString('zh-TW')}</div>
+                    <div class="annual-report-rank-percent" style="width: 60px; text-align: right; font-size: 13px; color: #999; margin-left: 12px;">${percentage}%</div>
                 </div>
             `;
         });
     }
     
     modal.innerHTML = `
-        <div style="background: white; border-radius: 20px; padding: 24px; max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3);">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; position: sticky; top: 0; background: white; z-index: 10; padding-bottom: 12px; border-bottom: 2px solid #f0f0f0;">
-                <h2 style="margin: 0; font-size: 24px; font-weight: 600; color: #333;">📊 ${currentYear} 年度報告</h2>
+        <div class="annual-report-content" style="background: white; border-radius: 20px; padding: 24px; max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3);">
+            <div class="annual-report-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px; position: sticky; top: 0; background: white; z-index: 10; padding-bottom: 12px; border-bottom: 2px solid #f0f0f0;">
+                <h2 class="annual-report-title" style="margin: 0; font-size: 24px; font-weight: 600; color: #333;">📊 ${currentYear} 年度報告</h2>
                 <button class="annual-report-close-btn" style="background: none; border: none; font-size: 24px; color: #999; cursor: pointer; padding: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 8px; transition: all 0.2s;">✕</button>
             </div>
             
-            <div style="display: flex; flex-direction: column; gap: 24px;">
+            <div class="annual-report-body" style="display: flex; flex-direction: column; gap: 24px;">
                 <!-- 總支出 -->
-                <div style="background: linear-gradient(135deg, #ffeef5 0%, #fff5f9 100%); padding: 20px; border-radius: 16px; border: 2px solid #ffb6d9;">
-                    <div style="font-size: 14px; color: #666; margin-bottom: 8px;">年度總支出</div>
-                    <div style="font-size: 32px; font-weight: 700; color: #ff69b4;">NT$${totalExpense.toLocaleString('zh-TW')}</div>
+                <div class="annual-report-total" style="background: linear-gradient(135deg, #ffeef5 0%, #fff5f9 100%); padding: 20px; border-radius: 16px; border: 2px solid #ffb6d9;">
+                    <div class="annual-report-total-label" style="font-size: 14px; color: #666; margin-bottom: 8px;">年度總支出</div>
+                    <div class="annual-report-total-value" style="font-size: 32px; font-weight: 700; color: #ff69b4;">NT$${totalExpense.toLocaleString('zh-TW')}</div>
                 </div>
                 
                 <!-- 年支出排行 -->
-                <div style="background: #f8f8f8; padding: 20px; border-radius: 16px;">
-                    <h3 style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: #333;">📈 年支出排行（Top 10）</h3>
-                    <div style="background: white; border-radius: 12px; overflow: hidden;">
+                <div class="annual-report-ranking" style="background: #f8f8f8; padding: 20px; border-radius: 16px;">
+                    <h3 class="annual-report-section-title" style="margin: 0 0 16px 0; font-size: 18px; font-weight: 600; color: #333;">📈 年支出排行（Top 10）</h3>
+                    <div class="annual-report-ranking-list" style="background: white; border-radius: 12px; overflow: hidden;">
                         ${expenseRankingHtml}
                     </div>
                 </div>
                 
                 <!-- 投資相關 -->
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
-                    <div style="background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%); padding: 20px; border-radius: 16px; border: 2px solid #c8e6c9;">
-                        <div style="font-size: 14px; color: #666; margin-bottom: 8px;">年投資總投入</div>
-                        <div style="font-size: 24px; font-weight: 700; color: #4caf50;">NT$${totalInvestment.toLocaleString('zh-TW')}</div>
+                <div class="annual-report-investment-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;">
+                    <div class="annual-report-card annual-report-investment" style="background: linear-gradient(135deg, #e8f5e9 0%, #f1f8e9 100%); padding: 20px; border-radius: 16px; border: 2px solid #c8e6c9;">
+                        <div class="annual-report-card-label" style="font-size: 14px; color: #666; margin-bottom: 8px;">年投資總投入</div>
+                        <div class="annual-report-card-value" style="font-size: 24px; font-weight: 700; color: #4caf50;">NT$${totalInvestment.toLocaleString('zh-TW')}</div>
                     </div>
                     
-                    <div style="background: linear-gradient(135deg, #fff3e0 0%, #fff8e1 100%); padding: 20px; border-radius: 16px; border: 2px solid #ffe0b2;">
-                        <div style="font-size: 14px; color: #666; margin-bottom: 8px;">年股息總額</div>
-                        <div style="font-size: 24px; font-weight: 700; color: #ff9800;">NT$${totalDividend.toLocaleString('zh-TW')}</div>
+                    <div class="annual-report-card annual-report-dividend" style="background: linear-gradient(135deg, #fff3e0 0%, #fff8e1 100%); padding: 20px; border-radius: 16px; border: 2px solid #ffe0b2;">
+                        <div class="annual-report-card-label" style="font-size: 14px; color: #666; margin-bottom: 8px;">年股息總額</div>
+                        <div class="annual-report-card-value" style="font-size: 24px; font-weight: 700; color: #ff9800;">NT$${totalDividend.toLocaleString('zh-TW')}</div>
                     </div>
                 </div>
                 
                 <!-- 最燒錢分類 -->
                 ${topExpenseCategory ? `
-                    <div style="background: linear-gradient(135deg, #ffebee 0%, #fce4ec 100%); padding: 20px; border-radius: 16px; border: 2px solid #ffcdd2; text-align: center;">
-                        <div style="font-size: 16px; color: #666; margin-bottom: 12px;">😅 最燒錢分類</div>
-                        <div style="font-size: 28px; font-weight: 700; color: #f44336; margin-bottom: 8px;">${topExpenseCategory.category}</div>
-                        <div style="font-size: 20px; color: #666;">NT$${topExpenseCategory.amount.toLocaleString('zh-TW')}</div>
-                        <div style="font-size: 14px; color: #999; margin-top: 8px;">佔總支出 ${((topExpenseCategory.amount / totalExpense) * 100).toFixed(1)}%</div>
+                    <div class="annual-report-top-category" style="background: linear-gradient(135deg, #ffebee 0%, #fce4ec 100%); padding: 20px; border-radius: 16px; border: 2px solid #ffcdd2; text-align: center;">
+                        <div class="annual-report-top-label" style="font-size: 16px; color: #666; margin-bottom: 12px;">😅 最燒錢分類</div>
+                        <div class="annual-report-top-name" style="font-size: 28px; font-weight: 700; color: #f44336; margin-bottom: 8px;">${topExpenseCategory.category}</div>
+                        <div class="annual-report-top-amount" style="font-size: 20px; color: #666;">NT$${topExpenseCategory.amount.toLocaleString('zh-TW')}</div>
+                        <div class="annual-report-top-percent" style="font-size: 14px; color: #999; margin-top: 8px;">佔總支出 ${((topExpenseCategory.amount / totalExpense) * 100).toFixed(1)}%</div>
                     </div>
                 ` : ''}
             </div>
             
-            <div style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #f0f0f0; text-align: center;">
+            <div class="annual-report-footer" style="margin-top: 24px; padding-top: 20px; border-top: 1px solid #f0f0f0; text-align: center;">
                 <button id="exportAnnualReportBtn" style="padding: 12px 24px; background: #ff69b4; color: white; border: none; border-radius: 12px; font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s;">📄 匯出報告</button>
             </div>
         </div>
@@ -9394,6 +10027,8 @@ function backupData() {
             investmentRecords: JSON.parse(localStorage.getItem('investmentRecords') || '[]'),
             dcaPlans: JSON.parse(localStorage.getItem('dcaPlans') || '[]'),
             stockCurrentPrices: JSON.parse(localStorage.getItem('stockCurrentPrices') || '{}'),
+
+            installmentRules: JSON.parse(localStorage.getItem('installmentRules') || '[]'),
             
             // 帳戶相關
             accounts: JSON.parse(localStorage.getItem('accounts') || '[]'),
@@ -9426,7 +10061,8 @@ function backupData() {
             accounts: data.accounts.length,
             categories: data.customCategories.length,
             budgets: Object.keys(data.categoryBudgets).length,
-            dcaPlans: data.dcaPlans.length
+            dcaPlans: data.dcaPlans.length,
+            installmentRules: data.installmentRules.length
         };
         
         const statsMessage = `資料統計：
@@ -9436,6 +10072,7 @@ function backupData() {
 • 自定義分類：${stats.categories} 個
 • 預算設定：${stats.budgets} 個
 • 定期定額：${stats.dcaPlans} 個
+• 分期規則：${stats.installmentRules} 個
 • 檔案大小：${sizeInMB.toFixed(2)} MB`;
         
         // 確認備份
@@ -9963,6 +10600,9 @@ function restoreData() {
                 }
                 if (data.dcaPlans) {
                     localStorage.setItem('dcaPlans', JSON.stringify(data.dcaPlans));
+                }
+                if (data.installmentRules) {
+                    localStorage.setItem('installmentRules', JSON.stringify(data.installmentRules));
                 }
                 if (data.stockCurrentPrices) {
                     localStorage.setItem('stockCurrentPrices', JSON.stringify(data.stockCurrentPrices));
@@ -10622,6 +11262,17 @@ function markTutorialCompleted(page) {
     localStorage.setItem('tutorialCompleted', JSON.stringify(completed));
 }
 
+function normalizeTutorialHtml(html) {
+    if (!html || typeof html !== 'string') return html;
+    return html
+        .replace(/background\s*:\s*white\s*;/gi, 'background: var(--bg-white);')
+        .replace(/background\s*:\s*#fff\s*;/gi, 'background: var(--bg-white);')
+        .replace(/background\s*:\s*#ffffff\s*;/gi, 'background: var(--bg-white);')
+        .replace(/color\s*:\s*#333\s*;/gi, 'color: var(--text-primary);')
+        .replace(/color\s*:\s*#666\s*;/gi, 'color: var(--text-secondary);')
+        .replace(/color\s*:\s*#999\s*;/gi, 'color: var(--text-tertiary);');
+}
+
 // 顯示分頁教學
 function showPageTutorial(page) {
     // 檢查是否已完成教學
@@ -10646,7 +11297,7 @@ function showPageTutorial(page) {
         const isLast = currentPage === pages.length - 1;
         
         modal.innerHTML = `
-            <div class="tutorial-content" style="background: white; border-radius: 20px; padding: 32px 24px; max-width: 500px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3); position: relative;">
+            <div class="tutorial-content" style="background: var(--bg-white); border-radius: 20px; padding: 32px 24px; max-width: 500px; width: 100%; max-height: 90vh; overflow-y: auto; box-shadow: 0 8px 32px rgba(0,0,0,0.3); position: relative; color: var(--text-primary);">
                 <!-- 進度指示器 -->
                 <div style="display: flex; justify-content: center; gap: 8px; margin-bottom: 24px;">
                     ${pages.map((_, index) => `
@@ -10655,17 +11306,17 @@ function showPageTutorial(page) {
                 </div>
                 
                 <!-- 關閉按鈕 -->
-                <button class="tutorial-close-btn" style="position: absolute; top: 16px; right: 16px; background: none; border: none; font-size: 24px; color: #999; cursor: pointer; padding: 8px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 8px; transition: all 0.2s;">✕</button>
+                <button class="tutorial-close-btn" style="position: absolute; top: 16px; right: 16px; background: none; border: none; font-size: 24px; color: var(--text-tertiary); cursor: pointer; padding: 8px; width: 36px; height: 36px; display: flex; align-items: center; justify-content: center; border-radius: 8px; transition: all 0.2s;">✕</button>
                 
                 <!-- 教學內容 -->
-                <div class="tutorial-page-content">
-                    ${pageData.content}
+                <div class="tutorial-page-content" style="color: var(--text-secondary);">
+                    ${normalizeTutorialHtml(pageData.content)}
                 </div>
                 
                 <!-- 底部按鈕 -->
                 <div style="display: flex; gap: 12px; margin-top: 32px;">
                     ${!isFirst ? `
-                        <button class="tutorial-prev-btn" style="flex: 1; padding: 14px; border: 2px solid #e0e0e0; border-radius: 12px; background: white; color: #666; font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s;">← 上一頁</button>
+                        <button class="tutorial-prev-btn" style="flex: 1; padding: 14px; border: 2px solid var(--border-light); border-radius: 12px; background: var(--bg-white); color: var(--text-secondary); font-size: 16px; font-weight: 600; cursor: pointer; transition: all 0.2s;">← 上一頁</button>
                     ` : '<div style="flex: 1;"></div>'}
                     ${isLast ? `
                         <button class="tutorial-complete-btn" style="flex: 1; padding: 14px; border: none; border-radius: 12px; background: linear-gradient(135deg, #ffb6d9 0%, #ff9ec7 100%); color: white; font-size: 16px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 12px rgba(255, 105, 180, 0.3);">完成</button>
@@ -10676,7 +11327,7 @@ function showPageTutorial(page) {
                 
                 <!-- 跳過按鈕 -->
                 <div style="text-align: center; margin-top: 16px;">
-                    <button class="tutorial-skip-btn" style="background: none; border: none; color: #999; font-size: 14px; cursor: pointer; padding: 8px;">跳過教學</button>
+                    <button class="tutorial-skip-btn" style="background: none; border: none; color: var(--text-tertiary); font-size: 14px; cursor: pointer; padding: 8px;">跳過教學</button>
                 </div>
             </div>
         `;
@@ -10687,22 +11338,24 @@ function showPageTutorial(page) {
         const prevBtn = modal.querySelector('.tutorial-prev-btn');
         const nextBtn = modal.querySelector('.tutorial-next-btn');
         const completeBtn = modal.querySelector('.tutorial-complete-btn');
-        
-        const closeModal = () => {
-            markTutorialCompleted(page);
+
+        const closeModal = (markCompleted) => {
+            if (markCompleted) {
+                markTutorialCompleted(page);
+            }
             if (document.body.contains(modal)) {
                 document.body.removeChild(modal);
             }
         };
         
         if (closeBtn) {
-            closeBtn.onclick = closeModal;
+            closeBtn.onclick = () => closeModal(false);
             closeBtn.onmouseenter = () => closeBtn.style.background = '#f5f5f5';
             closeBtn.onmouseleave = () => closeBtn.style.background = 'none';
         }
         
         if (skipBtn) {
-            skipBtn.onclick = closeModal;
+            skipBtn.onclick = () => closeModal(true);
         }
         
         if (prevBtn) {
@@ -10726,7 +11379,7 @@ function showPageTutorial(page) {
         }
         
         if (completeBtn) {
-            completeBtn.onclick = closeModal;
+            completeBtn.onclick = () => closeModal(true);
         }
     };
     
@@ -10749,10 +11402,10 @@ function showTutorial() {
     modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 10004; display: flex; align-items: center; justify-content: center; overflow-y: auto;';
     
     modal.innerHTML = `
-        <div class="tutorial-content" style="background: white; border-radius: 20px; padding: 24px; max-width: 500px; width: 90%; max-height: 90vh; overflow-y: auto; margin: 20px; box-shadow: 0 8px 32px rgba(0,0,0,0.3);">
+        <div class="tutorial-content" style="background: var(--bg-white); border-radius: 20px; padding: 24px; max-width: 500px; width: 90%; max-height: 90vh; overflow-y: auto; margin: 20px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); color: var(--text-primary);">
             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-                <h2 style="font-size: 24px; font-weight: 600; color: #333; margin: 0;">📚 操作教學</h2>
-                <button class="tutorial-close-btn" style="background: none; border: none; font-size: 24px; color: #999; cursor: pointer; padding: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 8px; transition: all 0.2s;">✕</button>
+                <h2 style="font-size: 24px; font-weight: 600; color: var(--text-primary); margin: 0;">📚 操作教學</h2>
+                <button class="tutorial-close-btn" style="background: none; border: none; font-size: 24px; color: var(--text-tertiary); cursor: pointer; padding: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: 8px; transition: all 0.2s;">✕</button>
             </div>
             
             <div class="tutorial-sections" style="display: flex; flex-direction: column; gap: 24px;">
@@ -10761,7 +11414,7 @@ function showTutorial() {
                     <h3 style="font-size: 18px; font-weight: 600; color: #ff69b4; margin: 0 0 12px 0; display: flex; align-items: center; gap: 8px;">
                         <span>✏️</span> 基本記帳
                     </h3>
-                    <div style="font-size: 14px; color: #666; line-height: 1.8;">
+                    <div style="font-size: 14px; color: var(--text-secondary); line-height: 1.8;">
                         <p style="margin: 0 0 8px 0;"><strong>1. 開始記帳：</strong>點擊記帳本頁面右下角的「✏️」按鈕</p>
                         <p style="margin: 0 0 8px 0;"><strong>2. 選擇類型：</strong>在頂部選擇「支出」、「收入」或「轉帳」</p>
                         <p style="margin: 0 0 8px 0;"><strong>3. 選擇分類：</strong>點擊分類卡片（如「飲食」、「交通」等）</p>
@@ -10776,7 +11429,7 @@ function showTutorial() {
                     <h3 style="font-size: 18px; font-weight: 600; color: #ff69b4; margin: 0 0 12px 0; display: flex; align-items: center; gap: 8px;">
                         <span>💳</span> 帳戶管理
                     </h3>
-                    <div style="font-size: 14px; color: #666; line-height: 1.8;">
+                    <div style="font-size: 14px; color: var(--text-secondary); line-height: 1.8;">
                         <p style="margin: 0 0 8px 0;"><strong>創建帳戶：</strong>首次使用時會提示創建帳戶，或點擊記帳頁面的帳戶按鈕</p>
                         <p style="margin: 0 0 8px 0;"><strong>選擇帳戶：</strong>點擊帳戶按鈕可切換不同帳戶</p>
                         <p style="margin: 0 0 8px 0;"><strong>帳戶圖片：</strong>在帳戶管理中可上傳和裁切帳戶圖片</p>
@@ -10789,7 +11442,7 @@ function showTutorial() {
                     <h3 style="font-size: 18px; font-weight: 600; color: #ff69b4; margin: 0 0 12px 0; display: flex; align-items: center; gap: 8px;">
                         <span>📂</span> 分類管理
                     </h3>
-                    <div style="font-size: 14px; color: #666; line-height: 1.8;">
+                    <div style="font-size: 14px; color: var(--text-secondary); line-height: 1.8;">
                         <p style="margin: 0 0 8px 0;"><strong>進入管理：</strong>設置 → 分類管理</p>
                         <p style="margin: 0 0 8px 0;"><strong>新增分類：</strong>點擊右上角「➕」按鈕，輸入名稱和圖標</p>
                         <p style="margin: 0 0 8px 0;"><strong>啟用/禁用：</strong>切換分類旁的開關按鈕</p>
@@ -11066,12 +11719,11 @@ function showCreatorInfo() {
 
 // ========== 主題顏色功能 ==========
 
-// 主題定義
 const themes = [
     {
         id: 'pink',
         name: '粉色主題',
-        icon: '💗',
+        icon: '💖',
         buttonIcon: '💗',
         preview: 'linear-gradient(135deg, #ffeef5 0%, #fff5f9 100%)',
         color: '#ff69b4'
@@ -11205,6 +11857,86 @@ const themes = [
         color: '#facc15'
     },
     {
+        id: 'neon',
+        name: '霓虹波動',
+        icon: '🟣',
+        buttonIcon: '🟣',
+        preview: 'linear-gradient(135deg, #0b1020 0%, #1f1147 50%, #00d4ff 100%)',
+        color: '#7c3aed'
+    },
+    {
+        id: 'sunset',
+        name: '夕陽流光',
+        icon: '🌇',
+        buttonIcon: '🌇',
+        preview: 'linear-gradient(135deg, #ff7a18 0%, #af002d 50%, #319197 100%)',
+        color: '#ff7a18'
+    },
+    {
+        id: 'ocean',
+        name: '海洋漣漪',
+        icon: '🌊',
+        buttonIcon: '🌊',
+        preview: 'linear-gradient(135deg, #0ea5e9 0%, #22c55e 50%, #06b6d4 100%)',
+        color: '#0ea5e9'
+    },
+    {
+        id: 'forest',
+        name: '森林微風',
+        icon: '🌿',
+        buttonIcon: '🌿',
+        preview: 'linear-gradient(135deg, #064e3b 0%, #16a34a 50%, #84cc16 100%)',
+        color: '#16a34a'
+    },
+    {
+        id: 'galaxy',
+        name: '星雲漂移',
+        icon: '🪐',
+        buttonIcon: '🪐',
+        preview: 'linear-gradient(135deg, #0b1020 0%, #3b0764 50%, #1d4ed8 100%)',
+        color: '#8b5cf6'
+    },
+    {
+        id: 'lava',
+        name: '熔岩脈動',
+        icon: '🌋',
+        buttonIcon: '🌋',
+        preview: 'linear-gradient(135deg, #0f172a 0%, #b91c1c 50%, #fb923c 100%)',
+        color: '#ef4444'
+    },
+    {
+        id: 'mint',
+        name: '薄荷清涼',
+        icon: '🍃',
+        buttonIcon: '🍃',
+        preview: 'linear-gradient(135deg, #ecfeff 0%, #d1fae5 50%, #bbf7d0 100%)',
+        color: '#10b981'
+    },
+    {
+        id: 'coffee',
+        name: '咖啡暖光',
+        icon: '☕',
+        buttonIcon: '☕',
+        preview: 'linear-gradient(135deg, #3f2d20 0%, #7c4a2d 50%, #f59e0b 100%)',
+        color: '#b45309'
+    },
+    {
+        id: 'peach',
+        name: '蜜桃柔霧',
+        icon: '🍑',
+        buttonIcon: '🍑',
+        preview: 'linear-gradient(135deg, #fff1f2 0%, #ffedd5 50%, #ffe4e6 100%)',
+        color: '#fb7185'
+    },
+    {
+        id: 'mono',
+        name: '黑白律動',
+        icon: '⚫',
+        buttonIcon: '⚫',
+        preview: 'linear-gradient(135deg, #0b0f19 0%, #334155 50%, #e2e8f0 100%)',
+        color: '#0f172a'
+    },
+    {
         id: 'snow',
         name: '飄雪主題',
         icon: '❄️',
@@ -11219,6 +11951,38 @@ const themes = [
         buttonIcon: '🐾',
         preview: 'linear-gradient(135deg, rgba(255, 255, 255, 0.75) 0%, rgba(230, 247, 255, 0.75) 100%), url("image/BMG.jpg") center/cover',
         color: '#4dd0e1'
+    },
+    {
+        id: 'auroraflow',
+        name: '極光動態主題',
+        icon: '🌠',
+        buttonIcon: '🌠',
+        preview: 'linear-gradient(135deg, #0f172a 0%, #2563eb 35%, #34d399 70%, #a855f7 100%)',
+        color: '#34d399'
+    },
+    {
+        id: 'meteor',
+        name: '流星動態主題',
+        icon: '☄️',
+        buttonIcon: '☄️',
+        preview: 'linear-gradient(135deg, #020617 0%, #0f172a 45%, #1d4ed8 100%)',
+        color: '#60a5fa'
+    },
+    {
+        id: 'cyber',
+        name: '霓虹動態主題',
+        icon: '⚡',
+        buttonIcon: '⚡',
+        preview: 'linear-gradient(135deg, #050816 0%, #0f172a 35%, #00f5ff 70%, #ff2d95 100%)',
+        color: '#00f5ff'
+    },
+    {
+        id: 'sunrise',
+        name: '晨曦動態主題',
+        icon: '🌅',
+        buttonIcon: '🌅',
+        preview: 'linear-gradient(135deg, #140f26 0%, #f472b6 40%, #facc15 100%)',
+        color: '#f97316'
     }
 ];
 
@@ -11440,16 +12204,117 @@ function updateThemeButtons(themeId) {
             navInvestment: '📈',
             navChart: '📊',
             navSettings: '⚙️'
+        },
+        neon: {
+            fab: '🟣',
+            navLedger: '🟣',
+            navWallet: '💎',
+            navInvestment: '📈',
+            navChart: '📊',
+            navSettings: '⚙️'
+        },
+        sunset: {
+            fab: '🌇',
+            navLedger: '🌇',
+            navWallet: '💰',
+            navInvestment: '📈',
+            navChart: '📊',
+            navSettings: '⚙️'
+        },
+        ocean: {
+            fab: '🌊',
+            navLedger: '🌊',
+            navWallet: '💧',
+            navInvestment: '📉',
+            navChart: '📊',
+            navSettings: '⚙️'
+        },
+        forest: {
+            fab: '🌿',
+            navLedger: '🌿',
+            navWallet: '💶',
+            navInvestment: '📈',
+            navChart: '📊',
+            navSettings: '⚙️'
+        },
+        galaxy: {
+            fab: '🪐',
+            navLedger: '🪐',
+            navWallet: '💫',
+            navInvestment: '🌟',
+            navChart: '🔭',
+            navSettings: '🌠'
+        },
+        lava: {
+            fab: '🌋',
+            navLedger: '🌋',
+            navWallet: '💴',
+            navInvestment: '📈',
+            navChart: '📊',
+            navSettings: '⚙️'
+        },
+        mint: {
+            fab: '🍃',
+            navLedger: '🍃',
+            navSettings: '⚙️'
+        },
+        peach: {
+            fab: '🍑',
+            navLedger: '🍑',
+            navWallet: '💰',
+            navInvestment: '📉',
+            navChart: '📊',
+            navSettings: '⚙️'
+        },
+        mono: {
+            fab: '⚫',
+            navLedger: '⚫',
+            navWallet: '💰',
+            navInvestment: '📈',
+            navChart: '📊',
+            navSettings: '⚙️'
+        },
+        auroraflow: {
+            fab: '🌠',
+            navLedger: '🌈',
+            navWallet: '💎',
+            navInvestment: '🚀',
+            navChart: '📊',
+            navSettings: '⚙️'
+        },
+        meteor: {
+            fab: '☄️',
+            navLedger: '☄️',
+            navWallet: '💫',
+            navInvestment: '🌠',
+            navChart: '🔭',
+            navSettings: '⚙️'
+        },
+        cyber: {
+            fab: '⚡',
+            navLedger: '⚡',
+            navWallet: '💾',
+            navInvestment: '🛰️',
+            navChart: '📟',
+            navSettings: '🛠️'
+        },
+        sunrise: {
+            fab: '🌅',
+            navLedger: '🌄',
+            navWallet: '💰',
+            navInvestment: '📈',
+            navChart: '📊',
+            navSettings: '⚙️'
         }
     };
 
     const iconAssetsDefault = {
         nav: {
-            ledger: 'image/Attached_image.png',
-            wallet: 'image/Attached_image2.png',
-            investment: 'image/Attached_image3.png',
-            chart: 'image/Attached_image4.png',
-            settings: 'image/Attached_image5.png'
+            ledger: 'image/1.png',
+            wallet: 'image/2.png',
+            investment: 'image/3.png',
+            chart: 'image/4.png',
+            settings: 'image/5.png'
         }
     };
 
@@ -11797,7 +12662,6 @@ function applyCustomTheme() {
 function showThemeSelector() {
     const modal = document.createElement('div');
     modal.className = 'theme-select-modal';
-    modal.style.cssText = 'position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.7); z-index: 10005; display: flex; align-items: center; justify-content: center; overflow-y: auto; padding: 20px;';
     
     const currentTheme = getCurrentTheme();
     const customTheme = getCustomTheme();
@@ -11814,95 +12678,141 @@ function showThemeSelector() {
         chartColor4: customTheme.chartColors?.[3] || '#ff1493',
         chartColor5: customTheme.chartColors?.[4] || '#db7093'
     };
-    
+
     modal.innerHTML = `
-        <div class="theme-custom-content" style="background: white; border-radius: 20px; padding: 24px; max-width: 600px; width: 100%; max-height: 90vh; overflow-y: auto;">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 24px;">
-                <h2 style="font-size: 24px; font-weight: 600; color: var(--text-primary); margin: 0;">🎨 主題自訂</h2>
-                <button class="theme-close-btn" style="background: none; border: none; font-size: 24px; color: var(--text-tertiary); cursor: pointer; padding: 0; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border-radius: var(--radius-sm); transition: all var(--transition-fast);">✕</button>
+        <div class="theme-custom-content modal-content-standard">
+            <div class="theme-modal-header">
+                <div class="theme-modal-title">🎨 主題</div>
+                <button class="theme-close-btn" type="button" aria-label="Close">✕</button>
             </div>
-            
-            <div style="margin-bottom: 24px;">
-                <div style="font-size: 16px; font-weight: 600; margin-bottom: 16px; color: var(--text-primary);">預設主題</div>
-                <div class="theme-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(100px, 1fr)); gap: 12px; margin-bottom: 24px;">
-                    ${themes.map(theme => {
-                        const isSelected = theme.id === currentTheme && !customTheme.primaryColor;
-                        return `
-                            <div class="theme-item ${isSelected ? 'selected' : ''}" data-theme-id="${theme.id}" style="cursor: pointer; border: 2px solid ${isSelected ? '#ff69b4' : '#e0e0e0'}; border-radius: 12px; padding: 12px; text-align: center; transition: all 0.2s;">
-                                <div style="width: 100%; height: 60px; background: ${theme.preview}; border-radius: 8px; margin-bottom: 8px;"></div>
-                                <div style="font-size: 20px;">${theme.icon}</div>
-                                <div style="font-size: 12px; color: #666; margin-top: 4px;">${theme.name}</div>
-                                ${isSelected ? '<div style="margin-top: 4px; color: #ff69b4; font-weight: bold;">✓</div>' : ''}
-                            </div>
-                        `;
-                    }).join('')}
+
+            <div class="theme-section">
+                <div class="theme-section-title">主題</div>
+                <div class="theme-toolbar">
+                    <input id="themeSearchInput" class="theme-search-input" type="text" placeholder="搜尋主題..." autocomplete="off" />
                 </div>
+                <div id="themeGrid" class="theme-grid theme-grid--auto"></div>
             </div>
-            
-            <div style="border-top: 1px solid #e0e0e0; padding-top: 24px; margin-bottom: 24px;">
-                <div style="font-size: 16px; font-weight: 600; margin-bottom: 16px; color: var(--text-primary);">自訂顏色</div>
-                
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 14px; color: #666; margin-bottom: 8px;">主色調（按鈕、邊框）</label>
-                    <div style="display: flex; align-items: center; gap: 12px;">
-                        <input type="color" id="primaryColorPicker" value="${defaultColors.primaryColor}" style="width: 60px; height: 40px; border: none; border-radius: 8px; cursor: pointer;">
-                        <input type="text" id="primaryColorText" value="${defaultColors.primaryColor}" style="flex: 1; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
-                    </div>
-                </div>
-                
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 14px; color: #666; margin-bottom: 8px;">框的背景顏色</label>
-                    <div style="display: flex; align-items: center; gap: 12px;">
-                        <input type="color" id="boxColorPicker" value="${defaultColors.boxColor}" style="width: 60px; height: 40px; border: none; border-radius: 8px; cursor: pointer;">
-                        <input type="text" id="boxColorText" value="${defaultColors.boxColor}" style="flex: 1; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
-                    </div>
-                </div>
-                
-                <div style="margin-bottom: 16px;">
-                    <label style="display: block; font-size: 14px; color: #666; margin-bottom: 8px;">背景顏色</label>
-                    <div style="display: flex; align-items: center; gap: 12px;">
-                        <input type="color" id="backgroundColorPicker" value="#ffeef5" style="width: 60px; height: 40px; border: none; border-radius: 8px; cursor: pointer;">
-                        <input type="text" id="backgroundColorText" value="${defaultColors.backgroundColor}" placeholder="例如: #ffeef5 或 linear-gradient(...)" style="flex: 1; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
-                    </div>
-                    <div style="font-size: 12px; color: #999; margin-top: 4px;">支援顏色代碼或漸層（linear-gradient）</div>
-                </div>
-            </div>
-            
-            <div style="border-top: 1px solid #e0e0e0; padding-top: 24px; margin-bottom: 24px;">
-                <div style="font-size: 16px; font-weight: 600; margin-bottom: 16px; color: var(--text-primary);">圖表顏色</div>
-                ${[1, 2, 3, 4, 5].map(i => `
-                    <div style="margin-bottom: 12px;">
-                        <label style="display: block; font-size: 14px; color: #666; margin-bottom: 8px;">圖表顏色 ${i}</label>
-                        <div style="display: flex; align-items: center; gap: 12px;">
-                            <input type="color" id="chartColor${i}Picker" value="${defaultColors[`chartColor${i}`]}" style="width: 60px; height: 40px; border: none; border-radius: 8px; cursor: pointer;">
-                            <input type="text" id="chartColor${i}Text" value="${defaultColors[`chartColor${i}`]}" style="flex: 1; padding: 10px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 14px;">
+
+            <div class="theme-section theme-section--divider">
+                <div class="theme-section-title">自訂顏色</div>
+
+                <div class="theme-form">
+                    <div class="theme-field">
+                        <label class="theme-label">主色調（按鈕、邊框）</label>
+                        <div class="theme-field-row">
+                            <input type="color" id="primaryColorPicker" value="${defaultColors.primaryColor}" class="theme-color-picker">
+                            <input type="text" id="primaryColorText" value="${defaultColors.primaryColor}" class="theme-text-input">
                         </div>
                     </div>
-                `).join('')}
-            </div>
-            
-            <div style="border-top: 1px solid #e0e0e0; padding-top: 24px; margin-bottom: 24px;">
-                <div style="font-size: 16px; font-weight: 600; margin-bottom: 16px; color: var(--text-primary);">背景圖片</div>
-                <div style="margin-bottom: 12px;">
-                    <input type="file" id="backgroundImageInput" accept="image/*" style="display: none;">
-                    <button id="uploadImageBtn" style="width: 100%; padding: 12px; background: var(--color-primary); color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">📷 上傳背景圖片</button>
+
+                    <div class="theme-field">
+                        <label class="theme-label">框的背景顏色</label>
+                        <div class="theme-field-row">
+                            <input type="color" id="boxColorPicker" value="${defaultColors.boxColor}" class="theme-color-picker">
+                            <input type="text" id="boxColorText" value="${defaultColors.boxColor}" class="theme-text-input">
+                        </div>
+                    </div>
+
+                    <div class="theme-field">
+                        <label class="theme-label">背景顏色</label>
+                        <div class="theme-field-row">
+                            <input type="color" id="backgroundColorPicker" value="#ffeef5" class="theme-color-picker">
+                            <input type="text" id="backgroundColorText" value="${defaultColors.backgroundColor}" placeholder="例如: #ffeef5 或 linear-gradient(...)" class="theme-text-input">
+                        </div>
+                        <div class="theme-help">支援顏色代碼或漸層（linear-gradient）</div>
+                    </div>
                 </div>
+            </div>
+
+            <div class="theme-section theme-section--divider">
+                <div class="theme-section-title">圖表顏色</div>
+                <div class="theme-form">
+                    ${[1, 2, 3, 4, 5].map(i => `
+                        <div class="theme-field">
+                            <label class="theme-label">圖表顏色 ${i}</label>
+                            <div class="theme-field-row">
+                                <input type="color" id="chartColor${i}Picker" value="${defaultColors[`chartColor${i}`]}" class="theme-color-picker">
+                                <input type="text" id="chartColor${i}Text" value="${defaultColors[`chartColor${i}`]}" class="theme-text-input">
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </div>
+
+            <div class="theme-section theme-section--divider">
+                <div class="theme-section-title">背景圖片</div>
+                <input type="file" id="backgroundImageInput" accept="image/*" style="display: none;">
+                <button id="uploadImageBtn" class="theme-primary-btn" type="button">📷 上傳背景圖片</button>
                 ${customTheme.backgroundImage ? `
-                    <div id="imagePreviewContainer" style="margin-top: 12px; position: relative;">
-                        <img src="${customTheme.backgroundImage}" alt="背景預覽" style="width: 100%; max-height: 200px; object-fit: cover; border-radius: 8px;">
-                        <button id="removeImageBtn" style="position: absolute; top: 8px; right: 8px; background: rgba(0,0,0,0.6); color: white; border: none; border-radius: 50%; width: 32px; height: 32px; cursor: pointer; font-size: 18px;">✕</button>
+                    <div id="imagePreviewContainer" class="theme-image-preview">
+                        <img src="${customTheme.backgroundImage}" alt="背景預覽" class="theme-image-preview-img">
+                        <button id="removeImageBtn" class="theme-image-remove-btn" type="button">✕</button>
                     </div>
                 ` : '<div id="imagePreviewContainer"></div>'}
             </div>
-            
-            <div style="display: flex; gap: 12px; margin-top: 24px;">
-                <button id="resetThemeBtn" style="flex: 1; padding: 12px; background: #f5f5f5; color: #666; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">重置</button>
-                <button id="saveThemeBtn" style="flex: 2; padding: 12px; background: var(--color-primary); color: white; border: none; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer;">儲存設定</button>
+
+            <div class="theme-actions">
+                <button id="resetThemeBtn" class="theme-secondary-btn" type="button">重置</button>
+                <button id="saveThemeBtn" class="theme-primary-btn" type="button">儲存設定</button>
             </div>
         </div>
     `;
     
     document.body.appendChild(modal);
+
+    const renderThemeGrid = (query = '') => {
+        const q = (query || '').trim().toLowerCase();
+        const grid = document.getElementById('themeGrid');
+        if (!grid) return;
+
+        const list = themes.filter(t => {
+            if (!q) return true;
+            return (t.name || '').toLowerCase().includes(q) || (t.id || '').toLowerCase().includes(q);
+        });
+
+        grid.innerHTML = list.map(theme => {
+            const isSelected = theme.id === currentTheme && !customTheme.primaryColor;
+            return `
+                <div class="theme-item ${isSelected ? 'selected' : ''}" data-theme-id="${theme.id}">
+                    <div class="theme-item-preview" style="background: ${theme.preview};"></div>
+                    <div class="theme-item-content theme-item-content--compact">
+                        <div class="theme-item-icon">${theme.icon}</div>
+                        <div class="theme-item-name">${theme.name}</div>
+                        ${isSelected ? '<div class="theme-item-check">✓</div>' : '<div class="theme-item-check theme-item-check--placeholder"></div>'}
+                    </div>
+                </div>
+            `;
+        }).join('');
+
+        grid.querySelectorAll('.theme-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const themeId = item.dataset.themeId;
+                applyTheme(themeId);
+                saveCustomTheme({});
+                applyCustomTheme();
+
+                grid.querySelectorAll('.theme-item').forEach(t => t.classList.remove('selected'));
+                item.classList.add('selected');
+
+                setTimeout(() => {
+                    if (document.body.contains(modal)) {
+                        document.body.removeChild(modal);
+                    }
+                    alert('主題已切換！');
+                }, 300);
+            });
+        });
+    };
+
+    renderThemeGrid('');
+
+    const themeSearchInput = document.getElementById('themeSearchInput');
+    if (themeSearchInput) {
+        themeSearchInput.addEventListener('input', (e) => {
+            renderThemeGrid(e.target.value);
+        });
+    }
     
     // 綁定顏色選擇器同步
     const colorInputs = [
@@ -11971,26 +12881,6 @@ function showThemeSelector() {
             previewContainer.style.marginTop = '0';
         });
     }
-    
-    // 綁定預設主題選擇
-    modal.querySelectorAll('.theme-item').forEach(item => {
-        item.addEventListener('click', () => {
-            const themeId = item.dataset.themeId;
-            applyTheme(themeId);
-            saveCustomTheme({}); // 清除自訂主題
-            applyCustomTheme(); // 重新應用
-            
-            modal.querySelectorAll('.theme-item').forEach(t => t.classList.remove('selected'));
-            item.classList.add('selected');
-            
-            setTimeout(() => {
-                if (document.body.contains(modal)) {
-                    document.body.removeChild(modal);
-                }
-                alert('主題已切換！');
-            }, 300);
-        });
-    });
     
     // 綁定儲存按鈕
     const saveBtn = document.getElementById('saveThemeBtn');
@@ -12400,6 +13290,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // 初始化底部導航
     initBottomNav();
 
+    initMonthSwitchers();
+
     // 檢查小森每日開啟對話
     setTimeout(() => {
         const allRecords = JSON.parse(localStorage.getItem('accountingRecords') || '[]');
@@ -12462,16 +13354,70 @@ document.addEventListener('DOMContentLoaded', () => {
     const headerSection = document.querySelector('.header-section');
     if (pageLedger) {
         pageLedger.style.display = 'block';
-        // 隱藏記帳輸入頁面的 header
         if (headerSection) headerSection.style.display = 'none';
         initLedger();
     }
     
-    // 檢查並執行到期的定期定額計劃（延遲執行，確保其他初始化完成）
+    // 檢查並執行到期的定期定額 / 分期規則（延遲執行，確保其他初始化完成）
     setTimeout(() => {
         checkAndExecuteDCAPlans();
+        if (typeof checkAndGenerateInstallments === 'function') {
+            checkAndGenerateInstallments();
+        }
     }, 1000);
-    
+
+    // 分期規則頁面：事件綁定
+    const installmentBackBtn = document.getElementById('installmentBackBtn');
+    if (installmentBackBtn) {
+        installmentBackBtn.addEventListener('click', () => {
+            showSettingsPage();
+        });
+    }
+
+    const installmentAddBtn = document.getElementById('installmentAddBtn');
+    if (installmentAddBtn) {
+        installmentAddBtn.addEventListener('click', () => {
+            showInstallmentSetupPage(null);
+        });
+    }
+
+    const installmentSetupBackBtn = document.getElementById('installmentSetupBackBtn');
+    if (installmentSetupBackBtn) {
+        installmentSetupBackBtn.addEventListener('click', () => {
+            showInstallmentManagementPage();
+        });
+    }
+
+    const installmentSaveBtn = document.getElementById('installmentSaveBtn');
+    if (installmentSaveBtn) {
+        installmentSaveBtn.addEventListener('click', () => {
+            saveInstallmentRule();
+        });
+    }
+
+    const installmentVoidBtn = document.getElementById('installmentVoidBtn');
+    if (installmentVoidBtn) {
+        installmentVoidBtn.addEventListener('click', () => {
+            deleteInstallmentRule(window.editingInstallmentRuleId);
+        });
+    }
+
+    const installmentReviseBtn = document.getElementById('installmentReviseBtn');
+    if (installmentReviseBtn) {
+        installmentReviseBtn.addEventListener('click', () => {
+            reviseInstallmentRule(window.editingInstallmentRuleId);
+        });
+    }
+
+    const installmentTotalAmountInput = document.getElementById('installmentTotalAmountInput');
+    const installmentTotalPeriodsInput = document.getElementById('installmentTotalPeriodsInput');
+    if (installmentTotalAmountInput) {
+        installmentTotalAmountInput.addEventListener('input', updateInstallmentPerPeriodPreview);
+    }
+    if (installmentTotalPeriodsInput) {
+        installmentTotalPeriodsInput.addEventListener('input', updateInstallmentPerPeriodPreview);
+    }
+
     // 初始化記帳輸入頁面（當顯示時）
     const pageInput = document.getElementById('pageInput');
     if (pageInput) {
@@ -13087,6 +14033,30 @@ function showStockDetailPage(stockCode) {
         document.getElementById('stockDetailName').textContent = stock.stockName;
         document.getElementById('stockDetailCode').textContent = stock.stockCode;
         
+        // 更新查價連結
+        const quoteLink = document.getElementById('metricQuoteLink');
+        if (quoteLink) {
+            const quoteSite = quoteLink.dataset.site || 'cnyes';
+            let href = '#';
+            if (quoteSite === 'cnyes') {
+                href = `https://www.cnyes.com/twstock/${stock.stockCode}`;
+            }
+            quoteLink.href = href;
+
+            // 有些情況會被外層事件攔截或阻止預設跳轉，因此這裡明確綁定開新分頁
+            quoteLink.onclick = (e) => {
+                if (e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+                if (!href || href === '#') {
+                    alert('請先選擇股票後再查價');
+                    return;
+                }
+                window.open(href, '_blank', 'noopener');
+            };
+        }
+        
         // 更新關鍵數據
         const stockShares = stock.shares || 0;
         const stockAvgCost = stock.avgCost != null && stock.avgCost !== 0 ? stock.avgCost : 0;
@@ -13094,16 +14064,62 @@ function showStockDetailPage(stockCode) {
         document.getElementById('metricAvgCost').textContent = `NT$${stockAvgCost.toFixed(2)}`;
         const currentPriceInput = document.getElementById('metricCurrentPrice');
         if (currentPriceInput) {
+            const measureInputTextWidthPx = (inputEl, text) => {
+                try {
+                    const style = window.getComputedStyle(inputEl);
+                    const font = style.font || `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+                    const canvas = measureInputTextWidthPx._canvas || (measureInputTextWidthPx._canvas = document.createElement('canvas'));
+                    const ctx = canvas.getContext('2d');
+                    if (!ctx) return null;
+                    ctx.font = font;
+                    const metrics = ctx.measureText(text);
+                    return metrics?.width ?? null;
+                } catch (_) {
+                    return null;
+                }
+            };
+
+            const applyAutoWidth = (el) => {
+                if (!el) return;
+
+                const isMobile = window.matchMedia && window.matchMedia('(max-width: 576px)').matches;
+                if (isMobile) {
+                    el.style.width = '100%';
+                    return;
+                }
+
+                const value = (el.value ?? '').toString();
+                const wrapper = el.closest('.metric-price-wrapper');
+                const quoteBtn = document.getElementById('metricQuoteLink');
+
+                const textWidth = measureInputTextWidthPx(el, value || '0');
+                // 讓 input 內部留一些左右 padding 的空間（略大一點避免跳動）
+                const desired = (textWidth != null ? Math.ceil(textWidth) : 80) + 36;
+                const minW = 120;
+
+                let maxW = wrapper ? wrapper.clientWidth : 360;
+                if (wrapper && quoteBtn) {
+                    const gap = 12;
+                    maxW = Math.max(120, wrapper.clientWidth - quoteBtn.offsetWidth - gap);
+                }
+
+                const finalW = Math.max(minW, Math.min(desired, maxW));
+                el.style.width = `${finalW}px`;
+            };
+
             // 優先使用保存的當前價格，如果沒有則使用平均成本
             const savedPrice = getStockCurrentPrice(stockCode);
             const defaultPrice = savedPrice || stockAvgCost;
             currentPriceInput.value = (defaultPrice != null ? defaultPrice : 0).toFixed(2);
+
+            applyAutoWidth(currentPriceInput);
             
             // 自動獲取現價（如果今天沒有手動輸入的價格）
             if (!hasManualPriceToday(stockCode)) {
             fetchStockPrice(stockCode).then(price => {
                 if (price && currentPriceInput) {
                     currentPriceInput.value = price.toFixed(2);
+                    applyAutoWidth(currentPriceInput);
                     // 觸發 input 事件以更新未實現損益
                     currentPriceInput.dispatchEvent(new Event('input'));
                 } else if (stockCode.endsWith('B')) {
@@ -13143,6 +14159,7 @@ function showStockDetailPage(stockCode) {
             currentPriceInput.parentNode.replaceChild(newInput, currentPriceInput);
             
             newInput.addEventListener('input', () => {
+                applyAutoWidth(newInput);
                 const currentPrice = parseFloat(newInput.value) || stockAvgCost;
                 const unrealizedPnl = (currentPrice - stockAvgCost) * stockShares;
                 const pnlEl = document.getElementById('metricUnrealizedPnl');
@@ -13232,36 +14249,8 @@ function updateStockRecords(stockCode) {
         } else {
             buyList.innerHTML = buyRecords.map(r => createRecordCard(r)).join('');
         }
-        
-        // 綁定編輯按鈕事件 - 立即綁定
-            buyList.querySelectorAll('.record-edit-fab').forEach(btn => {
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            
-            newBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                const recordId = newBtn.dataset.recordId;
-                    if (recordId) {
-                        editInvestmentRecord(recordId);
-                    }
-                });
-            });
-        
-        // 綁定刪除按鈕事件
-        buyList.querySelectorAll('.record-delete-fab').forEach(btn => {
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            
-            newBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                const recordId = newBtn.dataset.recordId;
-                if (recordId) {
-                    deleteInvestmentRecord(recordId);
-                }
-            });
-        });
+
+        bindRecordOverflowMenu(buyList);
     }
     
     // 賣出記錄
@@ -13293,36 +14282,8 @@ function updateStockRecords(stockCode) {
         } else {
             sellList.innerHTML = sellRecords.map(r => createRecordCard(r)).join('');
         }
-        
-        // 綁定編輯按鈕事件 - 立即綁定
-            sellList.querySelectorAll('.record-edit-fab').forEach(btn => {
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            
-            newBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                const recordId = newBtn.dataset.recordId;
-                    if (recordId) {
-                        editInvestmentRecord(recordId);
-                    }
-                });
-            });
-        
-        // 綁定刪除按鈕事件
-        sellList.querySelectorAll('.record-delete-fab').forEach(btn => {
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            
-            newBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                const recordId = newBtn.dataset.recordId;
-                if (recordId) {
-                    deleteInvestmentRecord(recordId);
-                }
-            });
-        });
+
+        bindRecordOverflowMenu(sellList);
     }
     
     // 股息記錄
@@ -13367,43 +14328,15 @@ function updateStockRecords(stockCode) {
                 quickAddDividend(stockCode, stockName, 0, 0, 'cash');
             });
         }
-        
-        // 綁定編輯按鈕事件 - 立即綁定（如果有記錄）
+
         if (dividendRecords.length > 0) {
-            dividendList.querySelectorAll('.record-edit-fab').forEach(btn => {
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            
-            newBtn.addEventListener('click', (e) => {
-                    e.stopPropagation();
-                    e.preventDefault();
-                const recordId = newBtn.dataset.recordId;
-                    if (recordId) {
-                        editInvestmentRecord(recordId);
-                    }
-                });
-            });
-        
-        // 綁定刪除按鈕事件
-        dividendList.querySelectorAll('.record-delete-fab').forEach(btn => {
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            
-            newBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                const recordId = newBtn.dataset.recordId;
-                if (recordId) {
-                    deleteInvestmentRecord(recordId);
-                }
-            });
-        });
-            
+            bindRecordOverflowMenu(dividendList);
+
             // 綁定新增股息按鈕事件（卡片上的）
             dividendList.querySelectorAll('.record-add-dividend-fab').forEach(btn => {
                 const newBtn = btn.cloneNode(true);
                 btn.parentNode.replaceChild(newBtn, btn);
-                
+
                 newBtn.addEventListener('click', (e) => {
                     e.stopPropagation();
                     e.preventDefault();
@@ -13413,8 +14346,8 @@ function updateStockRecords(stockCode) {
                     const shares = parseInt(newBtn.dataset.shares) || 0;
                     const dividendType = newBtn.dataset.dividendType || 'cash';
                     quickAddDividend(stockCode, stockName, perShare, shares, dividendType);
+                });
             });
-        });
         }
     }
 }
@@ -13430,11 +14363,12 @@ function createRecordCard(record) {
         const isDCA = record.isDCA === true;
         return `
             <div class="record-card ${isDividendReinvest ? 'dividend-reinvest' : ''} ${isDCA ? 'dca-invest' : ''}" data-record-id="${recordId}">
-                <button class="record-edit-fab" data-record-id="${recordId}" title="編輯">✏️</button>
-                <button class="record-delete-fab" data-record-id="${recordId}" title="刪除">🗑️</button>
                 <div class="record-card-header">
-                    <span class="record-card-type buy ${isDividendReinvest ? 'dividend-reinvest-badge' : ''} ${isDCA ? 'dca-badge' : ''}">${isDividendReinvest ? '💰 股利購買' : isDCA ? '📅 定期定額' : '買入'}</span>
-                    <span class="record-card-date">${record.date}</span>
+                    <div class="record-card-headline">
+                        <span class="record-card-type buy ${isDividendReinvest ? 'dividend-reinvest-badge' : ''} ${isDCA ? 'dca-badge' : ''}">${isDividendReinvest ? '💰 股利購買' : isDCA ? '📅 定期定額' : '買入'}</span>
+                        <span class="record-card-date">${record.date}</span>
+                    </div>
+                    ${renderRecordActionButtons(recordId)}
                 </div>
                 <div class="record-card-details">
                     <div>價格：NT$${price.toFixed(2)}</div>
@@ -13452,11 +14386,12 @@ function createRecordCard(record) {
         const totalAmount = price * shares - (record.fee || 0) - (record.tax || 0);
         return `
             <div class="record-card" data-record-id="${recordId}">
-                <button class="record-edit-fab" data-record-id="${recordId}" title="編輯">✏️</button>
-                <button class="record-delete-fab" data-record-id="${recordId}" title="刪除">🗑️</button>
                 <div class="record-card-header">
-                    <span class="record-card-type sell">賣出</span>
-                    <span class="record-card-date">${record.date}</span>
+                    <div class="record-card-headline">
+                        <span class="record-card-type sell">賣出</span>
+                        <span class="record-card-date">${record.date}</span>
+                    </div>
+                    ${renderRecordActionButtons(recordId)}
                 </div>
                 <div class="record-card-details">
                     <div>價格：NT$${price.toFixed(2)}</div>
@@ -13473,15 +14408,18 @@ function createRecordCard(record) {
     } else if (record.type === 'dividend') {
         return `
             <div class="record-card" data-record-id="${recordId}">
-                <button class="record-edit-fab" data-record-id="${recordId}" title="編輯">✏️</button>
-                <button class="record-delete-fab" data-record-id="${recordId}" title="刪除">🗑️</button>
                 <div class="record-card-header">
-                    <span class="record-card-type dividend">${record.dividendType === 'cash' ? '現金股利' : '股票股利'}</span>
-                    <span class="record-card-date">${record.date}</span>
+                    <div class="record-card-headline">
+                        <span class="record-card-type dividend">${record.dividendType === 'cash' ? '現金股利' : '股票股利'}</span>
+                        <span class="record-card-date">${record.date}</span>
+                    </div>
+                    ${renderRecordActionButtons(recordId)}
                 </div>
                 <div class="record-card-details">
                     <div>每股：NT$${(record.perShare != null ? record.perShare : 0).toFixed(2)}</div>
                     <div>股數：${record.shares || 0} 股</div>
+                    ${record.exDividendDate ? `<div>除息日：${record.exDividendDate}</div>` : ''}
+                    ${record.historicalPerShare ? `<div>過去每股：NT$${Number(record.historicalPerShare).toFixed(2)}</div>` : ''}
                     ${record.reinvest ? '<div>再投入 ✓</div>' : ''}
                 </div>
                 <div class="record-card-amount">實收金額：NT$${(record.amount != null ? record.amount : 0).toLocaleString('zh-TW')}</div>
@@ -14261,19 +15199,20 @@ function showEditDividendRecordModal(record) {
         if (index !== -1) {
                 // 保留原始記錄的所有屬性，只更新修改的欄位
                 const updatedRecord = {
-                ...records[index],
+                type: 'dividend',
                 stockCode: stockCode,
+                stockName: stockName,
                 date: date,
-                dividendType: dividendType,
+                exDividendDate: document.getElementById('dividendExDateInput')?.value || '',
+                dividendType: window.dividendType || 'cash',
                 perShare: perShare,
+                historicalPerShare: parseFloat(document.getElementById('dividendHistoricalPerShareInput')?.value) || null,
                 shares: shares,
                 amount: amount,
                 fee: fee,
                 reinvest: reinvest,
-                    note: note,
-                    // 確保保留原始ID
-                    timestamp: records[index].timestamp || record.timestamp,
-                    id: records[index].id || record.id
+                note: note,
+                timestamp: new Date().toISOString()
             };
                 
                 records[index] = updatedRecord;
@@ -15147,6 +16086,7 @@ function quickAddDividend(stockCode, stockName, perShare, shares, dividendType) 
         const stockNameInput = document.getElementById('dividendStockNameInput');
         const dateInput = document.getElementById('dividendDateInput');
         const perShareInput = document.getElementById('dividendPerShareInput');
+    const historicalPerShareInput = document.getElementById('dividendHistoricalPerShareInput');
         const sharesInput = document.getElementById('dividendSharesInput');
         const amountInput = document.getElementById('dividendAmountInput');
         const reinvestInput = document.getElementById('dividendReinvestInput');
@@ -15286,6 +16226,7 @@ function initDividendInput() {
                 
                 // 自動計算實收金額（如果已輸入每股股息）
                 const perShare = parseFloat(perShareInput?.value) || 0;
+        const historicalPerShare = parseFloat(historicalPerShareInput?.value) || null;
                 if (perShare > 0 && amountInput) {
                     const amount = perShare * stock.shares;
                     amountInput.value = amount.toFixed(2);
@@ -15535,6 +16476,7 @@ function saveDividendRecord() {
         dateInput.value = `${year}-${month}-${day}`;
     }
     if (perShareInput) perShareInput.value = '0';
+    if (historicalPerShareInput) historicalPerShareInput.value = '';
     if (sharesInput) sharesInput.value = '0';
     if (amountInput) amountInput.value = '0';
     if (reinvestInput) reinvestInput.checked = false;
@@ -15856,39 +16798,10 @@ function updateDividendRecordsList() {
         });
     }
     
-    // 綁定編輯和刪除按鈕事件（如果有記錄）
+    // 綁定新增股息按鈕事件（卡片上的）
     if (dividendRecords.length > 0) {
-        // 綁定編輯按鈕事件
-        list.querySelectorAll('.record-edit-fab').forEach(btn => {
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            
-            newBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                const recordId = newBtn.dataset.recordId;
-                if (recordId) {
-                    editInvestmentRecord(recordId);
-                }
-            });
-        });
-        
-        // 綁定刪除按鈕事件
-        list.querySelectorAll('.record-delete-fab').forEach(btn => {
-            const newBtn = btn.cloneNode(true);
-            btn.parentNode.replaceChild(newBtn, btn);
-            
-            newBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                e.preventDefault();
-                const recordId = newBtn.dataset.recordId;
-                if (recordId) {
-                    deleteInvestmentRecord(recordId);
-                }
-            });
-        });
-        
-        // 綁定新增股息按鈕事件（卡片上的）
+        bindRecordOverflowMenu(list);
+
         list.querySelectorAll('.record-add-dividend-fab').forEach(btn => {
             const newBtn = btn.cloneNode(true);
             btn.parentNode.replaceChild(newBtn, btn);
