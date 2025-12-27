@@ -5,6 +5,10 @@ let clickAudio = null;
 let incomeAudio = null;
 let audioFailed = { click: false, income: false }; // 記錄失敗狀態，避免重複嘗試
 
+if (typeof window !== 'undefined' && typeof window.applyAutoWidth !== 'function') {
+    window.applyAutoWidth = function () {};
+}
+
 function formatMonthKey(dateObj) {
     const d = new Date(dateObj);
     if (Number.isNaN(d.getTime())) return '';
@@ -14162,7 +14166,11 @@ function showStockDetailPage(stockCode) {
             currentPriceInput = newInput;
             
             newInput.addEventListener('input', () => {
-                applyAutoWidth(newInput);
+                if (typeof applyAutoWidth === 'function') {
+                    applyAutoWidth(newInput);
+                } else if (typeof window !== 'undefined' && typeof window.applyAutoWidth === 'function') {
+                    window.applyAutoWidth(newInput);
+                }
                 const currentPrice = parseFloat(newInput.value) || stockAvgCost;
                 const unrealizedPnl = (currentPrice - stockAvgCost) * stockShares;
                 const pnlEl = document.getElementById('metricUnrealizedPnl');
