@@ -14062,50 +14062,52 @@ function showStockDetailPage(stockCode) {
         const stockAvgCost = stock.avgCost != null && stock.avgCost !== 0 ? stock.avgCost : 0;
         document.getElementById('metricShares').textContent = `${stockShares.toLocaleString('zh-TW')} 股`;
         document.getElementById('metricAvgCost').textContent = `NT$${stockAvgCost.toFixed(2)}`;
-        const currentPriceInput = document.getElementById('metricCurrentPrice');
+
+        const measureInputTextWidthPx = (inputEl, text) => {
+            try {
+                const style = window.getComputedStyle(inputEl);
+                const font = style.font || `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+                const canvas = measureInputTextWidthPx._canvas || (measureInputTextWidthPx._canvas = document.createElement('canvas'));
+                const ctx = canvas.getContext('2d');
+                if (!ctx) return null;
+                ctx.font = font;
+                const metrics = ctx.measureText(text);
+                return metrics?.width ?? null;
+            } catch (_) {
+                return null;
+            }
+        };
+
+        const applyAutoWidth = (el) => {
+            if (!el) return;
+
+            const isMobile = window.matchMedia && window.matchMedia('(max-width: 576px)').matches;
+            if (isMobile) {
+                el.style.width = '100%';
+                return;
+            }
+
+            const value = (el.value ?? '').toString();
+            const wrapper = el.closest('.metric-price-wrapper');
+            const quoteBtn = document.getElementById('metricQuoteLink');
+
+            const textWidth = measureInputTextWidthPx(el, value || '0');
+            // 讓 input 內部留一些左右 padding 的空間（略大一點避免跳動）
+            const desired = (textWidth != null ? Math.ceil(textWidth) : 80) + 36;
+            const minW = 120;
+
+            let maxW = wrapper ? wrapper.clientWidth : 360;
+            if (wrapper && quoteBtn) {
+                const gap = 12;
+                maxW = Math.max(120, wrapper.clientWidth - quoteBtn.offsetWidth - gap);
+            }
+
+            const finalW = Math.max(minW, Math.min(desired, maxW));
+            el.style.width = `${finalW}px`;
+        };
+
+        let currentPriceInput = document.getElementById('metricCurrentPrice');
         if (currentPriceInput) {
-            const measureInputTextWidthPx = (inputEl, text) => {
-                try {
-                    const style = window.getComputedStyle(inputEl);
-                    const font = style.font || `${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-                    const canvas = measureInputTextWidthPx._canvas || (measureInputTextWidthPx._canvas = document.createElement('canvas'));
-                    const ctx = canvas.getContext('2d');
-                    if (!ctx) return null;
-                    ctx.font = font;
-                    const metrics = ctx.measureText(text);
-                    return metrics?.width ?? null;
-                } catch (_) {
-                    return null;
-                }
-            };
-
-            const applyAutoWidth = (el) => {
-                if (!el) return;
-
-                const isMobile = window.matchMedia && window.matchMedia('(max-width: 576px)').matches;
-                if (isMobile) {
-                    el.style.width = '100%';
-                    return;
-                }
-
-                const value = (el.value ?? '').toString();
-                const wrapper = el.closest('.metric-price-wrapper');
-                const quoteBtn = document.getElementById('metricQuoteLink');
-
-                const textWidth = measureInputTextWidthPx(el, value || '0');
-                // 讓 input 內部留一些左右 padding 的空間（略大一點避免跳動）
-                const desired = (textWidth != null ? Math.ceil(textWidth) : 80) + 36;
-                const minW = 120;
-
-                let maxW = wrapper ? wrapper.clientWidth : 360;
-                if (wrapper && quoteBtn) {
-                    const gap = 12;
-                    maxW = Math.max(120, wrapper.clientWidth - quoteBtn.offsetWidth - gap);
-                }
-
-                const finalW = Math.max(minW, Math.min(desired, maxW));
-                el.style.width = `${finalW}px`;
-            };
 
             // 優先使用保存的當前價格，如果沒有則使用平均成本
             const savedPrice = getStockCurrentPrice(stockCode);
@@ -14157,6 +14159,7 @@ function showStockDetailPage(stockCode) {
             // 移除舊的事件監聽器（如果有的話）
             const newInput = currentPriceInput.cloneNode(true);
             currentPriceInput.parentNode.replaceChild(newInput, currentPriceInput);
+            currentPriceInput = newInput;
             
             newInput.addEventListener('input', () => {
                 applyAutoWidth(newInput);
